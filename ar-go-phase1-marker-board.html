@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>AR Go — Phase 1: Board Tracking</title>
+<script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe-master.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; height: 100%; }
+  #status {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 50;
+    background: rgba(0,0,0,0.75);
+    color: white;
+    padding: 10px 14px;
+    font-family: -apple-system, system-ui, sans-serif;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  #status.found { background: rgba(0,120,0,0.75); }
+  #log {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 50;
+    background: rgba(0,0,0,0.75);
+    color: #0f8;
+    padding: 10px 14px;
+    font-family: monospace;
+    font-size: 12px;
+    max-height: 30vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body style="margin:0; overflow:hidden;">
+
+<div id="status">Point your camera at the printed marker. See instructions below the page — nothing will render until the marker is detected.</div>
+<div id="log">Waiting for marker...</div>
+
+<a-scene
+  embedded
+  vr-mode-ui="enabled: false"
+  renderer="logarithmicDepthBuffer: true; antialias: true"
+  arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
+>
+  <a-marker preset="hiro" id="marker" size="0.146" smooth="true" smoothCount="10" smoothTolerance="0.01" smoothThreshold="5">
+    <a-entity id="board-root"></a-entity>
+  </a-marker>
+
+  <a-entity camera></a-entity>
+</a-scene>
+
+<script>
+  const GRID_SIZE = 19;          // 19x19 Go board
+  const SPACING = 0.023;         // 2.3cm between intersections, in meters — adjust to match your real board
+  const boardRoot = document.getElementById('board-root');
+  const marker = document.getElementById('marker');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+
+  let stoneCount = 0;
+
+  function log(msg) {
+    logEl.textContent = msg + '\n' + logEl.textContent;
+  }
+
+  marker.addEventListener('markerFound', () => {
+    statusEl.textContent = 'Marker detected — grid should be locked to it. Tap any intersection dot to test placement.';
+    statusEl.classList.add('found');
+  });
+  marker.addEventListener('markerLost', () => {
+    statusEl.textContent = 'Marker lost — point your camera back at it.';
+    statusEl.classList.remove('found');
+  });
+
+  // Build the grid: line entities + a small clickable sphere at every intersection.
+  // The marker's own origin (0,0,0) is treated as the TOP-LEFT intersection of the board.
+  // Tape the printed marker so its top-left corner sits exactly on your board's top-left intersection.
+
+  function addLine(x1, z1, x2, z2) {
+    const line = document.createElement('a-entity');
+    line.setAttribute('line', {
+      start: `${x1} 0.001 ${z1}`,
+      end: `${x2} 0.001 ${z2}`,
+      color: '#222'
+    });
+    boardRoot.appendChild(line);
+  }
+
+  // Horizontal and vertical grid lines
+  const totalSize = SPACING * (GRID_SIZE - 1);
+  for (let i = 0; i < GRID_SIZE; i++) {
+    const offset = i * SPACING;
+    addLine(0, offset, totalSize, offset);       // horizontal
+    addLine(offset, 0, offset, totalSize);       // vertical
+  }
+
+  // Clickable intersection dots
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const dot = document.createElement('a-sphere');
+      dot.setAttribute('radius', '0.006');
+      dot.setAttribute('color', '#ffcc00');
+      dot.setAttribute('opacity', '0.6');
+      dot.setAttribute('position', `${col * SPACING} 0.002 ${row * SPACING}`);
+      dot.classList.add('intersection');
+      dot.dataset.row = row;
+      dot.dataset.col = col;
+
+      dot.addEventListener('click', () => {
+        placeStone(row, col, dot);
+      });
+
+      boardRoot.appendChild(dot);
+    }
+  }
+
+  function placeStone(row, col, dotEl) {
+    stoneCount++;
+    const stone = document.createElement('a-cylinder');
+    stone.setAttribute('radius', '0.009');
+    stone.setAttribute('height', '0.004');
+    stone.setAttribute('color', stoneCount % 2 === 0 ? '#ffffff' : '#111111');
+    stone.setAttribute('position', `${col * SPACING} 0.006 ${row * SPACING}`);
+    boardRoot.appendChild(stone);
+
+    dotEl.setAttribute('color', '#00ff00');
+    log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
+  }
+
+  // Enable tap/click interaction on mobile using A-Frame's cursor + raycaster on the camera
+  window.addEventListener('load', () => {
+    const cameraEntity = document.querySelector('[camera]');
+    cameraEntity.setAttribute('raycaster', 'objects: .intersection; far: 5');
+    cameraEntity.setAttribute('cursor', 'rayOrigin: mouse; fuse: false');
+  });
+
+  window.addEventListener('error', (e) => log('ERROR: ' + e.message));
+</script>
+
+</body>
+</html>
