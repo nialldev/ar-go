@@ -44,7 +44,7 @@
   embedded
   vr-mode-ui="enabled: false"
   renderer="logarithmicDepthBuffer: true; antialias: true"
-  arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
+  arjs="sourceType: webcam; sourceWidth: 1280; sourceHeight: 960; displayWidth: 1280; displayHeight: 960; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
 >
   <a-marker preset="hiro" id="marker" size="0.146" smooth="true" smoothCount="20" smoothTolerance="0.005" smoothThreshold="10">
     <a-entity id="board-root"></a-entity>
@@ -188,36 +188,51 @@
     const camera = sceneEl.camera;
     const dotEls = Array.from(document.querySelectorAll('.intersection'));
 
-    let closest = null;
-    let closestDist = Infinity;
     const worldPos = new THREE.Vector3();
+    const projected2D = []; // {el, x, y}
 
     dotEls.forEach((el) => {
       if (!el.object3D) return;
       el.object3D.getWorldPosition(worldPos);
-
-      // Skip points behind the camera
       const projected = worldPos.clone().project(camera);
       if (projected.z > 1) return;
 
       const screenX = (projected.x * 0.5 + 0.5) * window.innerWidth;
       const screenY = (-projected.y * 0.5 + 0.5) * window.innerHeight;
+      projected2D.push({ el, x: screenX, y: screenY });
+    });
 
-      const dist = Math.hypot(screenX - tapX, screenY - tapY);
+    if (projected2D.length < 2) {
+      log('Tap ignored: not enough visible dots to calibrate');
+      return;
+    }
+
+    // Estimate typical on-screen spacing between adjacent dots, so the tap
+    // radius adapts to current zoom/distance instead of using a fixed pixel value.
+    let sampleDist = null;
+    const p0 = projected2D[0];
+    for (let i = 1; i < projected2D.length; i++) {
+      const d = Math.hypot(projected2D[i].x - p0.x, projected2D[i].y - p0.y);
+      if (d > 2 && (sampleDist === null || d < sampleDist)) sampleDist = d;
+    }
+    const adaptiveRadius = Math.min(90, Math.max(18, (sampleDist || 40) * 0.65));
+
+    let closest = null;
+    let closestDist = Infinity;
+    projected2D.forEach(({ el, x, y }) => {
+      const dist = Math.hypot(x - tapX, y - tapY);
       if (dist < closestDist) {
         closestDist = dist;
         closest = el;
       }
     });
 
-    const TAP_RADIUS_PX = 60; // how forgiving the tap needs to be, in screen pixels
-
-    if (closest && closestDist < TAP_RADIUS_PX) {
+    if (closest && closestDist < adaptiveRadius) {
       const row = parseInt(closest.dataset.row, 10);
       const col = parseInt(closest.dataset.col, 10);
       placeStoneAt(row, col);
     } else {
-      log(`Tap missed — nearest dot was ${closestDist.toFixed(0)}px away`);
+      log(`Tap missed — nearest dot was ${closestDist.toFixed(0)}px away (radius: ${adaptiveRadius.toFixed(0)}px)`);
     }
   }
 
