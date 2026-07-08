@@ -32,6 +32,24 @@
 <div id="not-supported" style="display:none;"></div>
 <button id="recalibrate" class="control" style="top:54px; right:10px;">Recalibrate</button>
 
+<div id="adjust-ui" style="display:none; position:fixed; bottom:0; left:0; right:0; z-index:60; background:rgba(0,0,0,0.75); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
+  <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
+    <button class="corner-select control" data-corner="0" style="position:static;">TL</button>
+    <button class="corner-select control" data-corner="1" style="position:static;">TR</button>
+    <button class="corner-select control" data-corner="2" style="position:static;">BL</button>
+    <button class="corner-select control" data-corner="3" style="position:static;">BR</button>
+  </div>
+  <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
+    <button id="adj-left" class="control" style="position:static;">←</button>
+    <button id="adj-up" class="control" style="position:static;">↑</button>
+    <button id="adj-down" class="control" style="position:static;">↓</button>
+    <button id="adj-right" class="control" style="position:static;">→</button>
+  </div>
+  <div style="display:flex; justify-content:center;">
+    <button id="adj-confirm" class="control" style="position:static; background:#0a0; color:white;">Confirm & Build Grid</button>
+  </div>
+</div>
+
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/ARButton.js';
@@ -45,6 +63,10 @@ let hitTestSourceRequested = false;
 const cornerNames = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 let corners = []; // THREE.Vector3[]
 let calibrated = false;
+let adjusting = false;
+let selectedCorner = 0;
+const HEIGHT_OFFSET = -0.01; // lower everything ~1cm to sit closer to the real board surface
+const NUDGE_STEP = 0.003; // 3mm per arrow press
 
 const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
@@ -119,46 +141,96 @@ function onWindowResize() {
 }
 
 // --- Corner calibration via hit-test taps ---
+const cornerMarkers = []; // THREE.Mesh[] — one per tapped corner, kept so we can move them during adjustment
+
 function onSelect() {
   if (!reticle.visible) return;
+  if (adjusting) return; // once all 4 tapped, further taps don't add more corners
 
   if (!calibrated) {
     const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
     corners.push(pos.clone());
     log(`Corner ${corners.length} (${cornerNames[corners.length - 1]}) placed at x=${pos.x.toFixed(3)}, y=${pos.y.toFixed(3)}, z=${pos.z.toFixed(3)}`);
 
-    // Visual marker for the tapped corner
     const markerGeo = new THREE.SphereGeometry(0.02, 12, 12);
     const markerMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
     const marker = new THREE.Mesh(markerGeo, markerMat);
     marker.position.copy(pos);
     scene.add(marker);
+    cornerMarkers.push(marker);
 
     if (corners.length < 4) {
       statusEl.textContent = `Corner ${corners.length}/4 placed. Now tap the board's ${cornerNames[corners.length]} corner.`;
     } else {
-      calibrated = true;
-      statusEl.textContent = 'Board calibrated! Tap a grid dot to place a stone.';
-      statusEl.classList.add('ready');
-      buildGrid();
+      adjusting = true;
+      selectedCorner = 0;
+      reticle.visible = false;
+      showAdjustUI();
+      updateAdjustStatus();
     }
     return;
   }
+}
 
-  // Once calibrated, taps are handled by the separate tap-to-place logic (onTouchTap),
-  // not by the WebXR 'select' event, since we need screen-space nearest-dot matching.
+function updateAdjustStatus() {
+  statusEl.textContent = `Fine-tune corners: adjusting ${cornerNames[selectedCorner]}. Use arrows to nudge it onto the real corner, then tap another corner button or Confirm.`;
+}
+
+function finalizeCalibration() {
+  adjusting = false;
+  calibrated = true;
+  hideAdjustUI();
+  cornerMarkers.forEach((m) => scene.remove(m));
+  statusEl.textContent = 'Board calibrated! Tap a grid dot to place a stone.';
+  statusEl.classList.add('ready');
+  buildGrid();
 }
 
 function resetCalibration() {
   corners = [];
   calibrated = false;
+  adjusting = false;
+  cornerMarkers.forEach((m) => scene.remove(m));
+  cornerMarkers.length = 0;
+  hideAdjustUI();
   clearGrid();
+  reticle.visible = false;
   statusEl.classList.remove('ready');
   statusEl.textContent = 'Recalibrating — tap the board\'s top-left corner.';
   log('Recalibration started');
 }
 
 document.getElementById('recalibrate').addEventListener('click', resetCalibration);
+
+function showAdjustUI() {
+  document.getElementById('adjust-ui').style.display = 'block';
+  highlightSelectedCorner();
+}
+function hideAdjustUI() {
+  document.getElementById('adjust-ui').style.display = 'none';
+}
+function highlightSelectedCorner() {
+  document.querySelectorAll('.corner-select').forEach((btn) => {
+    btn.style.background = (parseInt(btn.dataset.corner) === selectedCorner) ? '#0a0' : '';
+    btn.style.color = (parseInt(btn.dataset.corner) === selectedCorner) ? 'white' : '';
+  });
+}
+
+document.querySelectorAll('.corner-select').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    selectedCorner = parseInt(btn.dataset.corner);
+    highlightSelectedCorner();
+    updateAdjustStatus();
+  });
+});
+
+// Nudge the selected corner along world X/Z (approximates the board's horizontal plane)
+document.getElementById('adj-left').addEventListener('click', () => { corners[selectedCorner].x -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
+document.getElementById('adj-right').addEventListener('click', () => { corners[selectedCorner].x += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
+document.getElementById('adj-up').addEventListener('click', () => { corners[selectedCorner].z -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
+document.getElementById('adj-down').addEventListener('click', () => { corners[selectedCorner].z += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
+
+document.getElementById('adj-confirm').addEventListener('click', finalizeCalibration);
 
 // --- Grid construction (reusing the same bilinear approach, now from 4 fixed real-world taps) ---
 const dotMeshes = [];
@@ -175,6 +247,7 @@ function gridPosition(row, col, target) {
   target.x = tl.x * (1 - u) * (1 - v) + tr.x * u * (1 - v) + bl.x * (1 - u) * v + br.x * u * v;
   target.y = tl.y * (1 - u) * (1 - v) + tr.y * u * (1 - v) + bl.y * (1 - u) * v + br.y * u * v;
   target.z = tl.z * (1 - u) * (1 - v) + tr.z * u * (1 - v) + bl.z * (1 - u) * v + br.z * u * v;
+  target.y += HEIGHT_OFFSET; // nudge down closer to the real board surface
   return target;
 }
 
