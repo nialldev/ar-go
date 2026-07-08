@@ -121,8 +121,8 @@
   let stoneCount = 0;
 
   function buildGridObjects() {
-    const dotGeo = new THREE.SphereGeometry(0.006, 8, 8);
-    const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.7 });
+    const dotGeo = new THREE.SphereGeometry(0.009, 8, 8);
+    const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.85 });
 
     for (let row = 0; row < GRID_SIZE; row++) {
       for (let col = 0; col < GRID_SIZE; col++) {
@@ -139,7 +139,7 @@
     const positions = new Float32Array(lineCount * 2 * 3); // 2 points per line, 3 floats per point
     const lineGeo = new THREE.BufferGeometry();
     lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x222222 });
+    const lineMat = new THREE.LineBasicMaterial({ color: 0x00e5ff });
     lineSegments = new THREE.LineSegments(lineGeo, lineMat);
     sceneObj3D.add(lineSegments);
 
@@ -183,12 +183,22 @@
     stoneCount++;
     const pos = new THREE.Vector3();
     gridPosition(row, col, pos);
-    const geo = new THREE.CylinderGeometry(0.009, 0.009, 0.004, 16);
-    const mat = new THREE.MeshBasicMaterial({ color: stoneCount % 2 === 0 ? 0xffffff : 0x111111 });
+
+    const geo = new THREE.CylinderGeometry(0.016, 0.016, 0.008, 24);
+    const mat = new THREE.MeshBasicMaterial({ color: stoneCount % 2 === 0 ? 0xffffff : 0x000000 });
     const stone = new THREE.Mesh(geo, mat);
     stone.position.copy(pos);
-    stone.position.y += 0.004;
+    stone.position.y += 0.006;
     stonesGroup.add(stone);
+
+    // Bright outline ring so the stone is unmistakable even at a glance
+    const ringGeo = new THREE.RingGeometry(0.017, 0.021, 24).rotateX(-Math.PI / 2);
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.position.copy(pos);
+    ring.position.y += 0.003;
+    stonesGroup.add(ring);
+
     log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
   }
 
