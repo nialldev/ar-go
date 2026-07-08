@@ -270,7 +270,7 @@ document.getElementById('adj-confirm').addEventListener('click', finalizeCalibra
 // --- Grid construction (reusing the same bilinear approach, now from 4 fixed real-world taps) ---
 const dotMeshes = [];
 let lineMeshes = [];
-const stonePool = [];
+const stoneAssets = {};
 let stoneCount = 0;
 let gridBuilt = false;
 
@@ -301,8 +301,8 @@ function clearGrid() {
   dotMeshes.length = 0;
   lineMeshes.forEach((m) => scene.remove(m));
   lineMeshes.length = 0;
-  stonePool.forEach((s) => { scene.remove(s.stoneMesh); scene.remove(s.ringMesh); });
-  stonePool.length = 0;
+  placedStones.forEach((s) => { scene.remove(s.stoneMesh); scene.remove(s.ringMesh); });
+  placedStones.length = 0;
   stoneCount = 0;
   gridBuilt = false;
 }
@@ -343,48 +343,44 @@ function buildGrid() {
     lineMeshes.push(mesh);
   }
 
-  const blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-  const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const stoneGeo = new THREE.CylinderGeometry(0.011, 0.011, 0.006, 24);
-  const ringGeo = new THREE.RingGeometry(0.0115, 0.0145, 24).rotateX(-Math.PI / 2);
-  const ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
-
-  for (let row = 0; row < GRID_SIZE; row++) {
-    for (let col = 0; col < GRID_SIZE; col++) {
-      const stoneMesh = new THREE.Mesh(stoneGeo, blackMat);
-      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
-      stoneMesh.visible = false;
-      ringMesh.visible = false;
-      scene.add(stoneMesh);
-      scene.add(ringMesh);
-      stonePool.push({ row, col, stoneMesh, ringMesh, blackMat, whiteMat, used: false });
-    }
-  }
+  // Stone/ring geometry and materials are prepared here (shared, reused for every
+  // stone placed later) but NO stone meshes themselves are pre-created — that
+  // 722-mesh pre-allocation is very likely what crashed the GPU/session. Instead,
+  // a stone is only created the moment it's actually placed.
+  stoneAssets.blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  stoneAssets.whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  stoneAssets.stoneGeo = new THREE.CylinderGeometry(0.011, 0.011, 0.006, 24);
+  stoneAssets.ringGeo = new THREE.RingGeometry(0.0115, 0.0145, 24).rotateX(-Math.PI / 2);
+  stoneAssets.ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
 
   gridBuilt = true;
-  // Reticle no longer needed once calibrated
   reticle.visible = false;
 }
 
+const placedStones = []; // {row, col, stoneMesh, ringMesh}
+
 function placeStoneAt(row, col) {
+  if (placedStones.some((s) => s.row === row && s.col === col)) {
+    log(`Stone already placed at row=${row}, col=${col}`);
+    return;
+  }
   stoneCount++;
-  const slot = stonePool.find((s) => s.row === row && s.col === col);
-  if (!slot) { log(`ERROR: no pool slot for row=${row}, col=${col}`); return; }
-  if (slot.used) { log(`Stone already placed at row=${row}, col=${col}`); return; }
-  slot.used = true;
 
   const pos = new THREE.Vector3();
   gridPosition(row, col, pos);
 
-  slot.stoneMesh.material = stoneCount % 2 === 0 ? slot.whiteMat : slot.blackMat;
-  slot.stoneMesh.position.copy(pos);
-  slot.stoneMesh.position.y += 0.003;
-  slot.stoneMesh.visible = true;
+  const mat = stoneCount % 2 === 0 ? stoneAssets.whiteMat : stoneAssets.blackMat;
+  const stoneMesh = new THREE.Mesh(stoneAssets.stoneGeo, mat);
+  stoneMesh.position.copy(pos);
+  stoneMesh.position.y += 0.003;
+  scene.add(stoneMesh);
 
-  slot.ringMesh.position.copy(pos);
-  slot.ringMesh.position.y += 0.001;
-  slot.ringMesh.visible = true;
+  const ringMesh = new THREE.Mesh(stoneAssets.ringGeo, stoneAssets.ringMat);
+  ringMesh.position.copy(pos);
+  ringMesh.position.y += 0.001;
+  scene.add(ringMesh);
 
+  placedStones.push({ row, col, stoneMesh, ringMesh });
   log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
 }
 
