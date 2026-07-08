@@ -166,6 +166,23 @@ function onWindowResize() {
 // --- Corner calibration via hit-test taps ---
 const cornerMarkers = []; // THREE.Mesh[] — one per tapped corner, kept so we can move them during adjustment
 
+function createRingCrosshairMarker(color) {
+  const group = new THREE.Group();
+  const ringGeo = new THREE.RingGeometry(0.02, 0.024, 32).rotateX(-Math.PI / 2);
+  const ringMat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide });
+  group.add(new THREE.Mesh(ringGeo, ringMat));
+
+  const crossMat = new THREE.MeshBasicMaterial({ color });
+  const barGeo = new THREE.BoxGeometry(0.04, 0.002, 0.002);
+  const crossH = new THREE.Mesh(barGeo, crossMat);
+  group.add(crossH);
+  const crossV = new THREE.Mesh(barGeo, crossMat);
+  crossV.rotation.y = Math.PI / 2;
+  group.add(crossV);
+
+  return group;
+}
+
 function onSelect() {
   if (!reticle.visible) {
     log('Tap ignored: no surface detected right now (reticle not visible)');
@@ -178,9 +195,7 @@ function onSelect() {
     corners.push(pos.clone());
     log(`Corner ${corners.length} (${cornerNames[corners.length - 1]}) placed at x=${pos.x.toFixed(3)}, y=${pos.y.toFixed(3)}, z=${pos.z.toFixed(3)}`);
 
-    const markerGeo = new THREE.SphereGeometry(0.02, 12, 12);
-    const markerMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
-    const marker = new THREE.Mesh(markerGeo, markerMat);
+    const marker = createRingCrosshairMarker(0x00ff88);
     marker.position.copy(pos);
     scene.add(marker);
     cornerMarkers.push(marker);
@@ -308,50 +323,16 @@ function clearGrid() {
 }
 
 function buildGrid() {
-  const dotGeo = new THREE.SphereGeometry(0.005, 8, 8);
-  const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.85 });
-
-  for (let row = 0; row < GRID_SIZE; row++) {
-    for (let col = 0; col < GRID_SIZE; col++) {
-      const mesh = new THREE.Mesh(dotGeo, dotMat);
-      mesh.userData.row = row;
-      mesh.userData.col = col;
-      gridPosition(row, col, mesh.position);
-      scene.add(mesh);
-      dotMeshes.push(mesh);
-    }
-  }
-
-  const lineBoxGeo = new THREE.BoxGeometry(1, 1, 1);
-  const lineBoxMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
-  const a = new THREE.Vector3(), b = new THREE.Vector3();
-
-  for (let row = 0; row < GRID_SIZE; row++) {
-    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
-    gridPosition(row, 0, a);
-    gridPosition(row, GRID_SIZE - 1, b);
-    positionLineMesh(mesh, a, b);
-    scene.add(mesh);
-    lineMeshes.push(mesh);
-  }
-  for (let col = 0; col < GRID_SIZE; col++) {
-    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
-    gridPosition(0, col, a);
-    gridPosition(GRID_SIZE - 1, col, b);
-    positionLineMesh(mesh, a, b);
-    scene.add(mesh);
-    lineMeshes.push(mesh);
-  }
-
-  // Stone/ring geometry and materials are prepared here (shared, reused for every
-  // stone placed later) but NO stone meshes themselves are pre-created — that
-  // 722-mesh pre-allocation is very likely what crashed the GPU/session. Instead,
-  // a stone is only created the moment it's actually placed.
-  stoneAssets.blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-  stoneAssets.whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  stoneAssets.stoneGeo = new THREE.CylinderGeometry(0.011, 0.011, 0.006, 24);
-  stoneAssets.ringGeo = new THREE.RingGeometry(0.0115, 0.0145, 24).rotateX(-Math.PI / 2);
-  stoneAssets.ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
+  // TEMPORARY DIAGNOSTIC VERSION — deliberately minimal.
+  // If this still crashes, the problem isn't our grid-building code at all —
+  // it's something about the WebXR session/dom-overlay itself at this point.
+  log('buildGrid: about to add ONE test cube');
+  const testGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05);
+  const testMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+  const testCube = new THREE.Mesh(testGeo, testMat);
+  gridPosition(9, 9, testCube.position); // center of the board
+  scene.add(testCube);
+  log('buildGrid: test cube added successfully');
 
   gridBuilt = true;
   reticle.visible = false;
