@@ -34,6 +34,11 @@
 <div id="log">Waiting to start...</div>
 <div id="not-supported" style="display:none;"></div>
 <button id="recalibrate" class="control" style="top:54px; right:10px;">Recalibrate</button>
+<button id="pass-btn" class="control" style="top:54px; left:10px;">Pass</button>
+<button id="resign-btn" class="control" style="top:96px; left:10px;">Resign</button>
+<button id="clear-stones-btn" class="control" style="top:96px; right:10px;">Clear Stones</button>
+<button id="undo-btn" class="control" style="top:138px; right:10px;">Undo</button>
+<div id="captures" style="position:fixed; top:180px; left:0; right:0; z-index:55; text-align:center; color:white; font-family:-apple-system, system-ui, sans-serif; font-size:13px; background:rgba(0,0,0,0.6); padding:4px;">Captures — Black: 0 &nbsp; White: 0</div>
 
 <div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
   <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
@@ -378,14 +383,101 @@ const EMPTY = 0, BLACK = 1, WHITE = 2;
 let boardState = [];
 for (let r = 0; r < GRID_SIZE; r++) boardState.push(new Array(GRID_SIZE).fill(EMPTY));
 let currentTurn = BLACK;
-let koPoint = null; // {row, col} — a single intersection that can't be immediately recaptured into
+let koPoint = null;
+let passCount = 0;
+let gameOver = false;
+let blackCaptures = 0; // stones Black has captured (i.e. White stones removed)
+let whiteCaptures = 0; // stones White has captured
 
 function resetBoardState() {
   boardState = [];
   for (let r = 0; r < GRID_SIZE; r++) boardState.push(new Array(GRID_SIZE).fill(EMPTY));
   currentTurn = BLACK;
   koPoint = null;
+  passCount = 0;
+  gameOver = false;
+  blackCaptures = 0;
+  whiteCaptures = 0;
+  updateCapturesUI();
 }
+
+function updateCapturesUI() {
+  document.getElementById('captures').textContent = `Captures — Black: ${blackCaptures}   White: ${whiteCaptures}`;
+}
+
+// --- Move history (full-state snapshots) for reliable Undo ---
+const moveHistory = [];
+function snapshotState() {
+  return {
+    board: boardState.map((row) => row.slice()),
+    currentTurn,
+    koPoint: koPoint ? { ...koPoint } : null,
+    passCount,
+    blackCaptures,
+    whiteCaptures,
+    gameOver
+  };
+}
+
+function rebuildStonesFromBoardState() {
+  placedStones.forEach((s) => { scene.remove(s.stoneMesh); scene.remove(s.ringMesh); });
+  placedStones.length = 0;
+
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      const color = boardState[r][c];
+      if (color === EMPTY) continue;
+
+      const pos = new THREE.Vector3();
+      gridPosition(r, c, pos);
+
+      const mat = color === BLACK ? stoneAssets.blackMat : stoneAssets.whiteMat;
+      const stoneMesh = new THREE.Mesh(stoneAssets.stoneGeo, mat);
+      stoneMesh.position.copy(pos);
+      stoneMesh.position.y += 0.003;
+      scene.add(stoneMesh);
+
+      const ringMesh = new THREE.Mesh(stoneAssets.ringGeo, stoneAssets.ringMat);
+      ringMesh.position.copy(pos);
+      ringMesh.position.y += 0.001;
+      scene.add(ringMesh);
+
+      placedStones.push({ row: r, col: c, stoneMesh, ringMesh, color });
+    }
+  }
+}
+
+function doUndo() {
+  if (moveHistory.length === 0) {
+    log('Nothing to undo');
+    return;
+  }
+  const snap = moveHistory.pop();
+  boardState = snap.board.map((row) => row.slice());
+  currentTurn = snap.currentTurn;
+  koPoint = snap.koPoint;
+  passCount = snap.passCount;
+  blackCaptures = snap.blackCaptures;
+  whiteCaptures = snap.whiteCaptures;
+  gameOver = snap.gameOver;
+
+  rebuildStonesFromBoardState();
+  updateCapturesUI();
+  if (!gameOver) updateTurnStatus();
+  log('Move undone');
+}
+
+function doClearStones() {
+  placedStones.forEach((s) => { scene.remove(s.stoneMesh); scene.remove(s.ringMesh); });
+  placedStones.length = 0;
+  moveHistory.length = 0;
+  resetBoardState();
+  updateTurnStatus();
+  log('Stones cleared — calibration kept, ready for a new test game');
+}
+
+document.getElementById('undo-btn').addEventListener('click', doUndo);
+document.getElementById('clear-stones-btn').addEventListener('click', doClearStones);
 
 function neighborsOf(row, col) {
   const list = [];
@@ -429,6 +521,98 @@ function updateTurnStatus() {
   statusEl.textContent = `${turnName}'s turn — tap a dot to place a stone.`;
 }
 
+// --- Pass / Resign / Scoring ---
+function doPass() {
+  if (gameOver) { log('Game is already over'); return; }
+  moveHistory.push(snapshotState());
+  const turnName = currentTurn === BLACK ? 'Black' : 'White';
+  log(`${turnName} passes`);
+  passCount++;
+  koPoint = null; // any non-recapture action clears the ko restriction
+  if (passCount >= 2) {
+    endGame('two passes in a row');
+    return;
+  }
+  currentTurn = currentTurn === BLACK ? WHITE : BLACK;
+  updateTurnStatus();
+}
+
+function doResign() {
+  if (gameOver) { log('Game is already over'); return; }
+  moveHistory.push(snapshotState());
+  const resigningName = currentTurn === BLACK ? 'Black' : 'White';
+  const winnerName = currentTurn === BLACK ? 'White' : 'Black';
+  gameOver = true;
+  statusEl.textContent = `${resigningName} resigned. ${winnerName} wins!`;
+  log(`${resigningName} resigned — ${winnerName} wins`);
+}
+
+// Area (Chinese-style) scoring: stones on board + surrounded empty territory
+function computeScore() {
+  let blackStones = 0, whiteStones = 0;
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (boardState[r][c] === BLACK) blackStones++;
+      else if (boardState[r][c] === WHITE) whiteStones++;
+    }
+  }
+
+  let blackTerritory = 0, whiteTerritory = 0;
+  const visited = new Set();
+
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (boardState[r][c] !== EMPTY || visited.has(r + ',' + c)) continue;
+
+      // Flood-fill this empty region, tracking which stone colors border it
+      const region = [];
+      const borderingColors = new Set();
+      const stack = [[r, c]];
+      while (stack.length) {
+        const [cr, cc] = stack.pop();
+        const key = cr + ',' + cc;
+        if (visited.has(key)) continue;
+        visited.add(key);
+        region.push([cr, cc]);
+        neighborsOf(cr, cc).forEach(([nr, nc]) => {
+          const val = boardState[nr][nc];
+          if (val === EMPTY && !visited.has(nr + ',' + nc)) stack.push([nr, nc]);
+          else if (val === BLACK || val === WHITE) borderingColors.add(val);
+        });
+      }
+
+      if (borderingColors.size === 1) {
+        if (borderingColors.has(BLACK)) blackTerritory += region.length;
+        else whiteTerritory += region.length;
+      }
+      // If bordered by both colors (or somehow neither), it's neutral (dame) — no score either way
+    }
+  }
+
+  return {
+    blackStones, whiteStones, blackTerritory, whiteTerritory,
+    blackTotal: blackStones + blackTerritory,
+    whiteTotal: whiteStones + whiteTerritory
+  };
+}
+
+function endGame(reason) {
+  gameOver = true;
+  const score = computeScore();
+  const winner = score.blackTotal > score.whiteTotal ? 'Black' : score.whiteTotal > score.blackTotal ? 'White' : 'Nobody';
+  const margin = Math.abs(score.blackTotal - score.whiteTotal);
+
+  const summary = winner === 'Nobody'
+    ? `Game over (${reason}). It's a tie: Black ${score.blackTotal} - White ${score.whiteTotal}.`
+    : `Game over (${reason}). ${winner} wins by ${margin}! Black ${score.blackTotal} (${score.blackStones} stones + ${score.blackTerritory} territory) - White ${score.whiteTotal} (${score.whiteStones} stones + ${score.whiteTerritory} territory).`;
+
+  statusEl.textContent = summary;
+  log(summary);
+}
+
+document.getElementById('pass-btn').addEventListener('click', doPass);
+document.getElementById('resign-btn').addEventListener('click', doResign);
+
 const placedStones = []; // {row, col, stoneMesh, ringMesh, color}
 
 function removeStoneAt(row, col) {
@@ -441,6 +625,11 @@ function removeStoneAt(row, col) {
 }
 
 function placeStoneAt(row, col) {
+  if (gameOver) {
+    log('Game is over — Recalibrate to start a new game');
+    return;
+  }
+
   if (boardState[row][col] !== EMPTY) {
     log(`Illegal move: row=${row}, col=${col} is already occupied`);
     return;
@@ -450,6 +639,8 @@ function placeStoneAt(row, col) {
     log(`Illegal move: row=${row}, col=${col} violates the Ko rule (would immediately recreate the previous position) — play elsewhere first`);
     return;
   }
+
+  const preMoveSnapshot = snapshotState(); // captured BEFORE any mutation, for Undo
 
   const placingColor = currentTurn;
   const opponentColor = placingColor === BLACK ? WHITE : BLACK;
@@ -489,6 +680,9 @@ function placeStoneAt(row, col) {
     return;
   }
 
+  // Move confirmed legal from here — save the pre-move snapshot for Undo
+  moveHistory.push(preMoveSnapshot);
+
   // Ko rule: if this move was a single stone capturing exactly one opponent
   // stone, the opponent can't immediately recapture at that same point next turn.
   if (capturedSet.size === 1 && ownGroup.length === 1) {
@@ -523,10 +717,17 @@ function placeStoneAt(row, col) {
     removeStoneAt(r, c);
   });
 
+  if (capturedSet.size > 0) {
+    if (placingColor === BLACK) blackCaptures += capturedSet.size;
+    else whiteCaptures += capturedSet.size;
+    updateCapturesUI();
+  }
+
   const colorName = placingColor === BLACK ? 'Black' : 'White';
   const captureNote = capturedSet.size > 0 ? ` — captured ${capturedSet.size} stone(s)!` : '';
   log(`${colorName} stone #${stoneCount} placed at row=${row}, col=${col}${captureNote}`);
 
+  passCount = 0;
   currentTurn = opponentColor;
   updateTurnStatus();
 }
