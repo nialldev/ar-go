@@ -30,6 +30,7 @@
 
 <div id="status">Point your camera so all 4 corner markers are visible at least once, to calibrate the board. After that, you only need 1+ markers in view at a time.</div>
 <div id="corner-status">TL: ✗ &nbsp; TR: ✗ &nbsp; BL: ✗ &nbsp; BR: ✗</div>
+<button id="recalibrate" style="position:fixed; top:88px; right:10px; z-index:60; font-size:13px; padding:8px 12px;">Recalibrate</button>
 <div id="log">Waiting for markers...</div>
 <button id="log-corners" style="position:fixed; bottom:27vh; right:10px; z-index:60; font-size:13px; padding:8px 12px;">Log Corner Positions</button>
 
@@ -206,12 +207,13 @@
   function tick() {
     cornerIds.forEach((id) => {
       const el = cornerEls[id];
-      if (el.object3D && el.object3D.visible) {
+      // Only capture a corner's position the FIRST time it's seen, then lock it.
+      // Continuously re-reading it every frame let a single bad-angle glimpse
+      // permanently corrupt that corner's position, which is what caused the warping.
+      if (el.object3D && el.object3D.visible && !cornerCalibrated[id]) {
         el.object3D.getWorldPosition(cornerPos[id]);
-        if (!cornerCalibrated[id]) {
-          cornerCalibrated[id] = true;
-          updateCornerStatusUI();
-        }
+        cornerCalibrated[id] = true;
+        updateCornerStatusUI();
       }
     });
 
@@ -227,7 +229,7 @@
   function onTap(event) {
     log(`[tap event: ${event.type} on ${event.target.tagName}]`);
 
-    if (event.target.closest && (event.target.closest('#log-corners') || event.target.closest('#controls'))) return;
+    if (event.target.closest && (event.target.closest('#log-corners') || event.target.closest('#controls') || event.target.closest('#recalibrate'))) return;
 
     const now = Date.now();
     if (now - lastTapTime < 400) { log('  -> ignored (debounce)'); return; }
@@ -283,6 +285,14 @@
   window.addEventListener('touchend', onTap, { passive: false });
   window.addEventListener('click', onTap);
   window.addEventListener('error', (e) => log('ERROR: ' + e.message));
+
+  document.getElementById('recalibrate').addEventListener('click', () => {
+    cornerIds.forEach((id) => { cornerCalibrated[id] = false; });
+    cornerStatusEl.classList.remove('all-found');
+    statusEl.textContent = 'Recalibrating — point your camera so all 4 corner markers are visible again.';
+    updateCornerStatusUI();
+    log('Recalibration started');
+  });
 
   document.getElementById('scale-slider').addEventListener('input', (e) => {
     gridScale = parseFloat(e.target.value);
