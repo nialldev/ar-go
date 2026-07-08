@@ -54,10 +54,10 @@
 </a-scene>
 
 <div id="controls" style="position:fixed; bottom:32vh; left:0; right:0; z-index:50; display:flex; flex-direction:column; align-items:center; gap:8px; font-family:-apple-system, system-ui, sans-serif;">
-  <div style="display:flex; gap:10px;">
-    <button id="smaller" style="font-size:18px; padding:8px 14px;">− Scale</button>
-    <span id="spacing-label" style="background:rgba(0,0,0,0.75); color:white; padding:8px 12px; border-radius:6px;">2.1 x 2.2cm</span>
-    <button id="bigger" style="font-size:18px; padding:8px 14px;">+ Scale</button>
+  <div style="display:flex; align-items:center; gap:8px; width:90%; max-width:400px;">
+    <span style="color:white; font-size:13px;">Size</span>
+    <input type="range" id="scale-slider" min="0.2" max="15" step="0.05" value="1" style="flex:1;">
+    <span id="spacing-label" style="background:rgba(0,0,0,0.75); color:white; padding:6px 10px; border-radius:6px; font-size:12px; white-space:nowrap;">2.1 x 2.2cm</span>
   </div>
   <div style="display:flex; gap:6px; align-items:center;">
     <button id="left" style="font-size:18px; padding:8px 12px;">←</button>
@@ -149,14 +149,15 @@
     boardRoot.appendChild(line);
   }
 
-  document.getElementById('bigger').addEventListener('click', () => { scaleFactor += 0.02; buildGrid(); });
-  document.getElementById('smaller').addEventListener('click', () => { scaleFactor = Math.max(0.5, scaleFactor - 0.02); buildGrid(); });
+  document.getElementById('scale-slider').addEventListener('input', (e) => {
+    scaleFactor = parseFloat(e.target.value);
+    buildGrid();
+  });
 
-  const NUDGE = 0.01; // 1cm per tap
-  document.getElementById('left').addEventListener('click', () => { OFFSET_X -= NUDGE; updateTransform(); });
-  document.getElementById('right').addEventListener('click', () => { OFFSET_X += NUDGE; updateTransform(); });
-  document.getElementById('up').addEventListener('click', () => { OFFSET_Z -= NUDGE; updateTransform(); });
-  document.getElementById('down').addEventListener('click', () => { OFFSET_Z += NUDGE; updateTransform(); });
+  document.getElementById('left').addEventListener('click', () => { OFFSET_X -= 0.01 * scaleFactor; updateTransform(); });
+  document.getElementById('right').addEventListener('click', () => { OFFSET_X += 0.01 * scaleFactor; updateTransform(); });
+  document.getElementById('up').addEventListener('click', () => { OFFSET_Z -= 0.01 * scaleFactor; updateTransform(); });
+  document.getElementById('down').addEventListener('click', () => { OFFSET_Z += 0.01 * scaleFactor; updateTransform(); });
   document.getElementById('rot-left').addEventListener('click', () => { ROTATION -= 2; updateTransform(); });
   document.getElementById('rot-right').addEventListener('click', () => { ROTATION += 2; updateTransform(); });
 
