@@ -116,9 +116,20 @@ function init() {
     showNotSupported("WebXR isn't available in this browser.");
   }
 
-  const reticleGeometry = new THREE.RingGeometry(0.04, 0.05, 32).rotateX(-Math.PI / 2);
-  const reticleMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
-  reticle = new THREE.Mesh(reticleGeometry, reticleMaterial);
+  // Reticle: hollow ring + crosshair for clearer aiming than a solid-looking blob
+  reticle = new THREE.Group();
+  const ringGeo = new THREE.RingGeometry(0.045, 0.05, 32).rotateX(-Math.PI / 2);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ff88, side: THREE.DoubleSide });
+  reticle.add(new THREE.Mesh(ringGeo, ringMat));
+
+  const crossMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+  const barGeo = new THREE.BoxGeometry(0.09, 0.002, 0.002);
+  const crossH = new THREE.Mesh(barGeo, crossMat);
+  reticle.add(crossH);
+  const crossV = new THREE.Mesh(barGeo, crossMat);
+  crossV.rotation.y = Math.PI / 2;
+  reticle.add(crossV);
+
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
   scene.add(reticle);
@@ -128,6 +139,14 @@ function init() {
   scene.add(controller);
 
   window.addEventListener('resize', onWindowResize);
+  renderer.domElement.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    log('!!! WEBGL CONTEXT LOST !!! This is likely why the screen went black — a GPU-level crash, not a JS error. Try reloading the page.');
+  });
+  renderer.domElement.addEventListener('webglcontextrestored', () => {
+    log('WebGL context restored');
+  });
+
   renderer.setAnimationLoop(render);
 }
 
@@ -435,6 +454,7 @@ function render(timestamp, frame) {
         session.addEventListener('end', () => {
           hitTestSourceRequested = false;
           hitTestSource = null;
+          log('XR session ended (either you exited, or the session crashed/was terminated by the OS)');
         });
         hitTestSourceRequested = true;
       }
