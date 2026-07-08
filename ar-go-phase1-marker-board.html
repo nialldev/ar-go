@@ -50,16 +50,23 @@
     <a-entity id="board-root"></a-entity>
   </a-marker>
 
-  <a-entity camera></a-entity>
+  <a-entity camera id="main-camera"></a-entity>
 </a-scene>
 
+<div id="controls" style="position:fixed; bottom:32vh; left:0; right:0; z-index:50; display:flex; justify-content:center; gap:10px; font-family:-apple-system, system-ui, sans-serif;">
+  <button id="smaller" style="font-size:20px; padding:10px 18px;">− Smaller</button>
+  <span id="spacing-label" style="background:rgba(0,0,0,0.75); color:white; padding:10px 14px; border-radius:6px;">2.3cm</span>
+  <button id="bigger" style="font-size:20px; padding:10px 18px;">+ Bigger</button>
+</div>
+
 <script>
-  const GRID_SIZE = 19;          // 19x19 Go board
-  const SPACING = 0.023;         // 2.3cm between intersections, in meters — adjust to match your real board
+  const GRID_SIZE = 19;
+  let SPACING = 0.023; // meters, adjustable live via the buttons below
   const boardRoot = document.getElementById('board-root');
   const marker = document.getElementById('marker');
   const statusEl = document.getElementById('status');
   const logEl = document.getElementById('log');
+  const spacingLabel = document.getElementById('spacing-label');
 
   let stoneCount = 0;
 
@@ -68,7 +75,7 @@
   }
 
   marker.addEventListener('markerFound', () => {
-    statusEl.textContent = 'Marker detected — grid should be locked to it. Tap any intersection dot to test placement.';
+    statusEl.textContent = 'Marker detected — grid should be locked to it. Use the +/- buttons to resize, tap a dot to test placement.';
     statusEl.classList.add('found');
   });
   marker.addEventListener('markerLost', () => {
@@ -76,9 +83,35 @@
     statusEl.classList.remove('found');
   });
 
-  // Build the grid: line entities + a small clickable sphere at every intersection.
-  // The marker's own origin (0,0,0) is treated as the TOP-LEFT intersection of the board.
-  // Tape the printed marker so its top-left corner sits exactly on your board's top-left intersection.
+  function buildGrid() {
+    // Clear existing grid/stones and rebuild at the current SPACING
+    while (boardRoot.firstChild) boardRoot.removeChild(boardRoot.firstChild);
+    stoneCount = 0;
+
+    const totalSize = SPACING * (GRID_SIZE - 1);
+
+    for (let i = 0; i < GRID_SIZE; i++) {
+      const offset = i * SPACING;
+      addLine(0, offset, totalSize, offset);
+      addLine(offset, 0, offset, totalSize);
+    }
+
+    for (let row = 0; row < GRID_SIZE; row++) {
+      for (let col = 0; col < GRID_SIZE; col++) {
+        const dot = document.createElement('a-sphere');
+        dot.setAttribute('radius', (SPACING * 0.25).toFixed(4));
+        dot.setAttribute('color', '#ffcc00');
+        dot.setAttribute('opacity', '0.7');
+        dot.setAttribute('position', `${col * SPACING} 0.002 ${row * SPACING}`);
+        dot.classList.add('intersection');
+        dot.dataset.row = row;
+        dot.dataset.col = col;
+        boardRoot.appendChild(dot);
+      }
+    }
+
+    spacingLabel.textContent = (SPACING * 100).toFixed(1) + 'cm';
+  }
 
   function addLine(x1, z1, x2, z2) {
     const line = document.createElement('a-entity');
@@ -90,54 +123,64 @@
     boardRoot.appendChild(line);
   }
 
-  // Horizontal and vertical grid lines
-  const totalSize = SPACING * (GRID_SIZE - 1);
-  for (let i = 0; i < GRID_SIZE; i++) {
-    const offset = i * SPACING;
-    addLine(0, offset, totalSize, offset);       // horizontal
-    addLine(offset, 0, offset, totalSize);       // vertical
-  }
+  document.getElementById('bigger').addEventListener('click', () => {
+    SPACING *= 1.1;
+    buildGrid();
+  });
+  document.getElementById('smaller').addEventListener('click', () => {
+    SPACING *= 0.9;
+    buildGrid();
+  });
 
-  // Clickable intersection dots
-  for (let row = 0; row < GRID_SIZE; row++) {
-    for (let col = 0; col < GRID_SIZE; col++) {
-      const dot = document.createElement('a-sphere');
-      dot.setAttribute('radius', '0.006');
-      dot.setAttribute('color', '#ffcc00');
-      dot.setAttribute('opacity', '0.6');
-      dot.setAttribute('position', `${col * SPACING} 0.002 ${row * SPACING}`);
-      dot.classList.add('intersection');
-      dot.dataset.row = row;
-      dot.dataset.col = col;
-
-      dot.addEventListener('click', () => {
-        placeStone(row, col, dot);
-      });
-
-      boardRoot.appendChild(dot);
-    }
-  }
-
-  function placeStone(row, col, dotEl) {
+  function placeStoneAt(row, col) {
     stoneCount++;
     const stone = document.createElement('a-cylinder');
-    stone.setAttribute('radius', '0.009');
+    stone.setAttribute('radius', (SPACING * 0.4).toFixed(4));
     stone.setAttribute('height', '0.004');
     stone.setAttribute('color', stoneCount % 2 === 0 ? '#ffffff' : '#111111');
     stone.setAttribute('position', `${col * SPACING} 0.006 ${row * SPACING}`);
     boardRoot.appendChild(stone);
-
-    dotEl.setAttribute('color', '#00ff00');
     log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
   }
 
-  // Enable tap/click interaction on mobile using A-Frame's cursor + raycaster on the camera
-  window.addEventListener('load', () => {
-    const cameraEntity = document.querySelector('[camera]');
-    cameraEntity.setAttribute('raycaster', 'objects: .intersection; far: 5');
-    cameraEntity.setAttribute('cursor', 'rayOrigin: mouse; fuse: false');
-  });
+  // Manual raycasting for tap detection — more reliable across devices than A-Frame's built-in cursor component
+  function onTap(event) {
+    const sceneEl = document.querySelector('a-scene');
+    if (!sceneEl || !sceneEl.camera) {
+      log('Tap ignored: camera not ready yet');
+      return;
+    }
 
+    const touch = event.changedTouches ? event.changedTouches[0] : event;
+    const x = (touch.clientX / window.innerWidth) * 2 - 1;
+    const y = -(touch.clientY / window.innerHeight) * 2 + 1;
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera({ x, y }, sceneEl.camera);
+
+    const dots = Array.from(document.querySelectorAll('.intersection'))
+      .map((el) => el.object3D)
+      .filter(Boolean);
+
+    const intersects = raycaster.intersectObjects(dots, true);
+
+    if (intersects.length > 0) {
+      let obj = intersects[0].object;
+      while (obj && !obj.el) obj = obj.parent;
+      if (obj && obj.el) {
+        const row = parseInt(obj.el.dataset.row, 10);
+        const col = parseInt(obj.el.dataset.col, 10);
+        placeStoneAt(row, col);
+        return;
+      }
+    }
+    log(`Tap missed — no intersection dot under (${touch.clientX}, ${touch.clientY})`);
+  }
+
+  window.addEventListener('touchend', onTap);
+  window.addEventListener('click', onTap);
+
+  buildGrid();
   window.addEventListener('error', (e) => log('ERROR: ' + e.message));
 </script>
 
