@@ -305,7 +305,7 @@ function gridPosition(row, col, target) {
   return target;
 }
 
-const LINE_THICKNESS = 0.005;
+const LINE_THICKNESS = 0.003;
 function positionLineMesh(mesh, a, b) {
   const mid = a.clone().add(b).multiplyScalar(0.5);
   const dir = b.clone().sub(a);
@@ -451,10 +451,16 @@ function placeStoneAt(row, col) {
   boardState[row][col] = placingColor;
 
   const capturedSet = new Set();
-  neighborsOf(row, col).forEach(([nr, nc]) => {
-    if (boardState[nr][nc] === opponentColor) {
+  const neighborList = neighborsOf(row, col);
+  log(`DEBUG placing at (${row},${col}): checking ${neighborList.length} neighbors: ${JSON.stringify(neighborList)}`);
+  neighborList.forEach(([nr, nc]) => {
+    const cellColor = boardState[nr][nc];
+    log(`  neighbor (${nr},${nc}) color=${cellColor} (opponent=${opponentColor})`);
+    if (cellColor === opponentColor) {
       const group = getGroup(nr, nc);
-      if (groupLiberties(group) === 0) {
+      const libs = groupLiberties(group);
+      log(`  -> opponent group at (${nr},${nc}): size=${group.length}, liberties=${libs}`);
+      if (libs === 0) {
         group.forEach(([r, c]) => capturedSet.add(r + ',' + c));
       }
     }
