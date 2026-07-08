@@ -191,15 +191,15 @@
     const pos = new THREE.Vector3();
     gridPosition(row, col, pos);
 
-    const geo = new THREE.CylinderGeometry(0.016, 0.016, 0.008, 24);
+    const geo = new THREE.CylinderGeometry(0.03, 0.03, 0.015, 24);
     const mat = new THREE.MeshBasicMaterial({ color: stoneCount % 2 === 0 ? 0xffffff : 0x000000 });
     const stone = new THREE.Mesh(geo, mat);
     stone.position.copy(pos);
-    stone.position.y += 0.006;
+    stone.position.y += 0.012;
     stonesGroup.add(stone);
 
     // Bright outline ring so the stone is unmistakable even at a glance
-    const ringGeo = new THREE.RingGeometry(0.017, 0.021, 24).rotateX(-Math.PI / 2);
+    const ringGeo = new THREE.RingGeometry(0.032, 0.04, 24).rotateX(-Math.PI / 2);
     const ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
     const ring = new THREE.Mesh(ringGeo, ringMat);
     ring.position.copy(pos);
@@ -300,9 +300,18 @@
 
     if (closest && closestDist < adaptiveRadius) {
       placeStoneAt(closest.userData.row, closest.userData.col);
+      flashTapMarker(tapX, tapY); // plain 2D confirmation, independent of the 3D pipeline
     } else {
       log(`Tap missed — nearest dot was ${closestDist.toFixed(0)}px away (radius: ${adaptiveRadius.toFixed(0)}px)`);
     }
+  }
+
+  function flashTapMarker(x, y) {
+    const marker = document.createElement('div');
+    marker.style.cssText = `position:fixed; left:${x - 25}px; top:${y - 25}px; width:50px; height:50px;
+      border-radius:50%; border:5px solid red; background:rgba(255,0,0,0.3); z-index:100; pointer-events:none;`;
+    document.body.appendChild(marker);
+    setTimeout(() => marker.remove(), 1500);
   }
 
   window.addEventListener('touchend', onTap, { passive: false });
