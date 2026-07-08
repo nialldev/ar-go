@@ -105,7 +105,11 @@ function init() {
       if (!supported) {
         showNotSupported("WebXR AR isn't supported on this device/browser. Try the latest Chrome on Android.");
       } else {
-        document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
+        document.body.appendChild(ARButton.createButton(renderer, {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['dom-overlay'],
+          domOverlay: { root: document.body }
+        }));
       }
     }).catch((err) => showNotSupported('isSessionSupported check failed: ' + err.message));
   } else {
