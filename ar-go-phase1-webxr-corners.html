@@ -378,11 +378,13 @@ const EMPTY = 0, BLACK = 1, WHITE = 2;
 let boardState = [];
 for (let r = 0; r < GRID_SIZE; r++) boardState.push(new Array(GRID_SIZE).fill(EMPTY));
 let currentTurn = BLACK;
+let koPoint = null; // {row, col} — a single intersection that can't be immediately recaptured into
 
 function resetBoardState() {
   boardState = [];
   for (let r = 0; r < GRID_SIZE; r++) boardState.push(new Array(GRID_SIZE).fill(EMPTY));
   currentTurn = BLACK;
+  koPoint = null;
 }
 
 function neighborsOf(row, col) {
@@ -444,6 +446,11 @@ function placeStoneAt(row, col) {
     return;
   }
 
+  if (koPoint && koPoint.row === row && koPoint.col === col) {
+    log(`Illegal move: row=${row}, col=${col} violates the Ko rule (would immediately recreate the previous position) — play elsewhere first`);
+    return;
+  }
+
   const placingColor = currentTurn;
   const opponentColor = placingColor === BLACK ? WHITE : BLACK;
 
@@ -480,6 +487,16 @@ function placeStoneAt(row, col) {
     boardState[row][col] = EMPTY;
     log(`Illegal move: row=${row}, col=${col} would have no liberties (suicide)`);
     return;
+  }
+
+  // Ko rule: if this move was a single stone capturing exactly one opponent
+  // stone, the opponent can't immediately recapture at that same point next turn.
+  if (capturedSet.size === 1 && ownGroup.length === 1) {
+    const [kr, kc] = [...capturedSet][0].split(',').map(Number);
+    koPoint = { row: kr, col: kc };
+    log(`Ko point set at (${kr},${kc}) — opponent can't immediately recapture there`);
+  } else {
+    koPoint = null;
   }
 
   // Legal move — render it
