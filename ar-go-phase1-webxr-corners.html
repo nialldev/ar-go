@@ -23,6 +23,9 @@
   button.control {
     position: fixed; z-index: 60; font-size: 13px; padding: 8px 12px;
   }
+  .adjust-btn {
+    font-size: 13px; padding: 8px 12px; z-index: 61;
+  }
 </style>
 </head>
 <body>
@@ -32,21 +35,21 @@
 <div id="not-supported" style="display:none;"></div>
 <button id="recalibrate" class="control" style="top:54px; right:10px;">Recalibrate</button>
 
-<div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.75); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
+<div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
   <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
-    <button class="corner-select control" data-corner="0" style="position:static;">TL</button>
-    <button class="corner-select control" data-corner="1" style="position:static;">TR</button>
-    <button class="corner-select control" data-corner="2" style="position:static;">BL</button>
-    <button class="corner-select control" data-corner="3" style="position:static;">BR</button>
+    <button class="corner-select adjust-btn" data-corner="0">TL</button>
+    <button class="corner-select adjust-btn" data-corner="1">TR</button>
+    <button class="corner-select adjust-btn" data-corner="2">BL</button>
+    <button class="corner-select adjust-btn" data-corner="3">BR</button>
   </div>
   <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
-    <button id="adj-left" class="control" style="position:static;">←</button>
-    <button id="adj-up" class="control" style="position:static;">↑</button>
-    <button id="adj-down" class="control" style="position:static;">↓</button>
-    <button id="adj-right" class="control" style="position:static;">→</button>
+    <button id="adj-left" class="adjust-btn">←</button>
+    <button id="adj-up" class="adjust-btn">↑</button>
+    <button id="adj-down" class="adjust-btn">↓</button>
+    <button id="adj-right" class="adjust-btn">→</button>
   </div>
   <div style="display:flex; justify-content:center;">
-    <button id="adj-confirm" class="control" style="position:static; background:#0a0; color:white;">Confirm & Build Grid</button>
+    <button id="adj-confirm" class="adjust-btn" style="background:#0a0; color:white;">Confirm & Build Grid</button>
   </div>
 </div>
 
@@ -406,7 +409,7 @@ function placeStoneAt(row, col) {
 let lastTapTime = 0;
 function onTouchTap(event) {
   if (!gridBuilt) return; // calibration taps are handled via WebXR 'select' instead
-  if (event.target.closest && event.target.closest('.control')) return;
+  if (event.target.closest && (event.target.closest('.control') || event.target.closest('.adjust-btn'))) return;
 
   const now = Date.now();
   if (now - lastTapTime < 400) return;
