@@ -65,7 +65,7 @@ let corners = []; // THREE.Vector3[]
 let calibrated = false;
 let adjusting = false;
 let selectedCorner = 0;
-const HEIGHT_OFFSET = -0.01; // lower everything ~1cm to sit closer to the real board surface
+const HEIGHT_OFFSET = 0.01; // flipped sign — previous value moved things the wrong way
 const NUDGE_STEP = 0.003; // 3mm per arrow press
 
 const statusEl = document.getElementById('status');
@@ -144,8 +144,11 @@ function onWindowResize() {
 const cornerMarkers = []; // THREE.Mesh[] — one per tapped corner, kept so we can move them during adjustment
 
 function onSelect() {
-  if (!reticle.visible) return;
-  if (adjusting) return; // once all 4 tapped, further taps don't add more corners
+  if (!reticle.visible) {
+    log('Tap ignored: no surface detected right now (reticle not visible)');
+    return;
+  }
+  if (adjusting) return;
 
   if (!calibrated) {
     const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
@@ -162,11 +165,13 @@ function onSelect() {
     if (corners.length < 4) {
       statusEl.textContent = `Corner ${corners.length}/4 placed. Now tap the board's ${cornerNames[corners.length]} corner.`;
     } else {
+      log('4th corner placed — switching to fine-tune mode');
       adjusting = true;
       selectedCorner = 0;
       reticle.visible = false;
       showAdjustUI();
       updateAdjustStatus();
+      log('showAdjustUI() called — adjust-ui display is now: ' + document.getElementById('adjust-ui').style.display);
     }
     return;
   }
@@ -421,7 +426,7 @@ function render(timestamp, frame) {
       hitTestSourceRequested = true;
     }
 
-    if (hitTestSource && !calibrated) {
+    if (hitTestSource && !calibrated && !adjusting) {
       const hitTestResults = frame.getHitTestResults(hitTestSource);
       if (hitTestResults.length > 0) {
         const hit = hitTestResults[0];
