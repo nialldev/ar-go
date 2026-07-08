@@ -150,7 +150,7 @@
     sceneObj3D.add(stonesGroup);
   }
 
-  const LINE_THICKNESS = 0.0025; // 2.5mm — adjust if lines look too thick/thin
+  const LINE_THICKNESS = 0.005; // 5mm — increased for visibility
 
   function positionLineMesh(mesh, a, b) {
     const mid = a.clone().add(b).multiplyScalar(0.5);
@@ -210,9 +210,16 @@
   }
 
   // --- Per-frame update loop ---
+  let anyMarkerCurrentlyVisible = false;
+
   function tick() {
+    anyMarkerCurrentlyVisible = false;
+
     cornerIds.forEach((id) => {
       const el = cornerEls[id];
+      if (el.object3D && el.object3D.visible) {
+        anyMarkerCurrentlyVisible = true;
+      }
       // Only capture a corner's position the FIRST time it's seen, then lock it.
       // Continuously re-reading it every frame let a single bad-angle glimpse
       // permanently corrupt that corner's position, which is what caused the warping.
@@ -225,6 +232,12 @@
 
     if (allCalibrated() && sceneObj3D) {
       updateGridPositions();
+      // Hide the whole grid when no marker is currently visible — otherwise it
+      // misleadingly stays frozen in place instead of showing tracking has paused.
+      const visible = anyMarkerCurrentlyVisible;
+      dotMeshes.forEach((m) => { m.visible = visible; });
+      lineMeshes.forEach((m) => { m.visible = visible; });
+      if (stonesGroup) stonesGroup.visible = visible;
     }
 
     requestAnimationFrame(tick);
@@ -245,6 +258,10 @@
     const sceneEl = document.querySelector('a-scene');
     if (!sceneEl || !sceneEl.camera || !allCalibrated()) {
       log('  -> ignored: not calibrated yet');
+      return;
+    }
+    if (!anyMarkerCurrentlyVisible) {
+      log('  -> ignored: no marker currently visible, tracking is paused');
       return;
     }
 
