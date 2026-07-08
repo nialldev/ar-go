@@ -200,7 +200,7 @@ function clearGrid() {
 }
 
 function buildGrid() {
-  const dotGeo = new THREE.SphereGeometry(0.009, 8, 8);
+  const dotGeo = new THREE.SphereGeometry(0.005, 8, 8);
   const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.85 });
 
   for (let row = 0; row < GRID_SIZE; row++) {
@@ -237,8 +237,8 @@ function buildGrid() {
 
   const blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
   const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const stoneGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.02, 24);
-  const ringGeo = new THREE.RingGeometry(0.047, 0.058, 24).rotateX(-Math.PI / 2);
+  const stoneGeo = new THREE.CylinderGeometry(0.011, 0.011, 0.006, 24);
+  const ringGeo = new THREE.RingGeometry(0.0115, 0.0145, 24).rotateX(-Math.PI / 2);
   const ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
 
   for (let row = 0; row < GRID_SIZE; row++) {
@@ -270,11 +270,11 @@ function placeStoneAt(row, col) {
 
   slot.stoneMesh.material = stoneCount % 2 === 0 ? slot.whiteMat : slot.blackMat;
   slot.stoneMesh.position.copy(pos);
-  slot.stoneMesh.position.y += 0.012;
+  slot.stoneMesh.position.y += 0.003;
   slot.stoneMesh.visible = true;
 
   slot.ringMesh.position.copy(pos);
-  slot.ringMesh.position.y += 0.003;
+  slot.ringMesh.position.y += 0.001;
   slot.ringMesh.visible = true;
 
   log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
