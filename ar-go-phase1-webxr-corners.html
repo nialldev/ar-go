@@ -187,15 +187,7 @@ function createRingCrosshairMarker(color) {
 }
 
 function onSelect() {
-  if (adjusting) {
-    // Tap anywhere on the AR view (not on the button panel) to confirm —
-    // using the same reliable mechanism that's placed all 4 corners without
-    // ever crashing, instead of the DOM "Confirm" button, which we suspect
-    // may be the actual trigger for the crashes.
-    log('Tap-to-confirm triggered via select event');
-    finalizeCalibration();
-    return;
-  }
+  if (adjusting) return; // fine-tuning is handled entirely by the DOM buttons now
 
   if (!reticle.visible) {
     log('Tap ignored: no surface detected right now (reticle not visible)');
