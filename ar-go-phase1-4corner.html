@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>AR Go — Phase 1: 4-Corner Board Tracking</title>
+<script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe-master.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; height: 100%; }
+  #status {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    background: rgba(0,0,0,0.75); color: white; padding: 10px 14px;
+    font-family: -apple-system, system-ui, sans-serif; font-size: 13px; line-height: 1.4;
+  }
+  #corner-status {
+    position: fixed; top: 54px; left: 0; right: 0; z-index: 50;
+    background: rgba(0,0,0,0.6); color: white; padding: 6px 14px;
+    font-family: monospace; font-size: 12px; display: flex; gap: 16px;
+  }
+  #corner-status.all-found { background: rgba(0,120,0,0.6); }
+  #log {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+    background: rgba(0,0,0,0.75); color: #0f8; padding: 10px 14px;
+    font-family: monospace; font-size: 12px; max-height: 26vh; overflow-y: auto; white-space: pre-wrap;
+  }
+</style>
+</head>
+<body style="margin:0; overflow:hidden;">
+
+<div id="status">Point your camera so all 4 corner markers are visible at least once, to calibrate the board. After that, you only need 1+ markers in view at a time.</div>
+<div id="corner-status">TL: ✗ &nbsp; TR: ✗ &nbsp; BL: ✗ &nbsp; BR: ✗</div>
+<div id="log">Waiting for markers...</div>
+
+<a-scene
+  embedded
+  vr-mode-ui="enabled: false"
+  renderer="logarithmicDepthBuffer: true; antialias: true"
+  arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
+>
+  <!-- Corner markers: 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right -->
+  <a-marker type="barcode" value="0" id="marker-tl" size="0.111" smooth="true" smoothCount="15" smoothTolerance="0.008" smoothThreshold="8"></a-marker>
+  <a-marker type="barcode" value="1" id="marker-tr" size="0.111" smooth="true" smoothCount="15" smoothTolerance="0.008" smoothThreshold="8"></a-marker>
+  <a-marker type="barcode" value="2" id="marker-bl" size="0.111" smooth="true" smoothCount="15" smoothTolerance="0.008" smoothThreshold="8"></a-marker>
+  <a-marker type="barcode" value="3" id="marker-br" size="0.111" smooth="true" smoothCount="15" smoothTolerance="0.008" smoothThreshold="8"></a-marker>
+
+  <a-entity camera id="main-camera"></a-entity>
+</a-scene>
+
+<script>
+  const GRID_SIZE = 19;
+  const cornerIds = ['tl', 'tr', 'bl', 'br']; // top-left, top-right, bottom-left, bottom-right
+  const cornerEls = {};
+  const cornerPos = {};      // cached last-known THREE.Vector3 per corner
+  const cornerCalibrated = {}; // has this corner EVER been seen
+  cornerIds.forEach(id => {
+    cornerEls[id] = document.getElementById('marker-' + id);
+    cornerPos[id] = new THREE.Vector3();
+    cornerCalibrated[id] = false;
+  });
+
+  const statusEl = document.getElementById('status');
+  const cornerStatusEl = document.getElementById('corner-status');
+  const logEl = document.getElementById('log');
+
+  function log(msg) {
+    logEl.textContent = msg + '\n' + logEl.textContent;
+  }
+
+  function allCalibrated() {
+    return cornerIds.every(id => cornerCalibrated[id]);
+  }
+
+  function updateCornerStatusUI() {
+    const labels = { tl: 'TL', tr: 'TR', bl: 'BL', br: 'BR' };
+    cornerStatusEl.textContent = cornerIds.map(id => `${labels[id]}: ${cornerCalibrated[id] ? '✓' : '✗'}`).join('   ');
+    if (allCalibrated()) {
+      cornerStatusEl.classList.add('all-found');
+      statusEl.textContent = 'Board calibrated. Tap a dot to place a stone. Keep at least 1 marker in view to keep tracking.';
+    }
+  }
+
+  // Bilinear interpolation across the 4 corner positions
+  function gridPosition(row, col, target) {
+    const u = col / (GRID_SIZE - 1); // 0 = left, 1 = right
+    const v = row / (GRID_SIZE - 1); // 0 = top,  1 = bottom
+
+    target.set(0, 0, 0);
+    const tl = cornerPos.tl, tr = cornerPos.tr, bl = cornerPos.bl, br = cornerPos.br;
+
+    target.x = tl.x * (1 - u) * (1 - v) + tr.x * u * (1 - v) + bl.x * (1 - u) * v + br.x * u * v;
+    target.y = tl.y * (1 - u) * (1 - v) + tr.y * u * (1 - v) + bl.y * (1 - u) * v + br.y * u * v;
+    target.z = tl.z * (1 - u) * (1 - v) + tr.z * u * (1 - v) + bl.z * (1 - u) * v + br.z * u * v;
+    return target;
+  }
+
+  // --- Build grid dots as raw three.js meshes for performance (updated every frame) ---
+  let sceneObj3D = null;
+  const dotMeshes = []; // {mesh, row, col}
+  let lineSegments = null;
+  let stonesGroup = null;
+  let stoneCount = 0;
+
+  function buildGridObjects() {
+    const dotGeo = new THREE.SphereGeometry(0.006, 8, 8);
+    const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.7 });
+
+    for (let row = 0; row < GRID_SIZE; row++) {
+      for (let col = 0; col < GRID_SIZE; col++) {
+        const mesh = new THREE.Mesh(dotGeo, dotMat);
+        mesh.userData.row = row;
+        mesh.userData.col = col;
+        sceneObj3D.add(mesh);
+        dotMeshes.push(mesh);
+      }
+    }
+
+    // One shared LineSegments object for all grid lines (far more efficient than many entities)
+    const lineCount = GRID_SIZE * 2; // horizontal + vertical lines
+    const positions = new Float32Array(lineCount * 2 * 3); // 2 points per line, 3 floats per point
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const lineMat = new THREE.LineBasicMaterial({ color: 0x222222 });
+    lineSegments = new THREE.LineSegments(lineGeo, lineMat);
+    sceneObj3D.add(lineSegments);
+
+    stonesGroup = new THREE.Group();
+    sceneObj3D.add(stonesGroup);
+  }
+
+  const tmpVec = new THREE.Vector3();
+
+  function updateGridPositions() {
+    // Dots
+    dotMeshes.forEach(({ userData }) => {});
+    dotMeshes.forEach((mesh) => {
+      gridPosition(mesh.userData.row, mesh.userData.col, tmpVec);
+      mesh.position.copy(tmpVec);
+    });
+
+    // Lines
+    const posAttr = lineSegments.geometry.attributes.position;
+    let idx = 0;
+    const a = new THREE.Vector3(), b = new THREE.Vector3();
+
+    // Horizontal lines: one per row, from col 0 to col GRID_SIZE-1
+    for (let row = 0; row < GRID_SIZE; row++) {
+      gridPosition(row, 0, a);
+      gridPosition(row, GRID_SIZE - 1, b);
+      posAttr.setXYZ(idx++, a.x, a.y, a.z);
+      posAttr.setXYZ(idx++, b.x, b.y, b.z);
+    }
+    // Vertical lines: one per col, from row 0 to row GRID_SIZE-1
+    for (let col = 0; col < GRID_SIZE; col++) {
+      gridPosition(0, col, a);
+      gridPosition(GRID_SIZE - 1, col, b);
+      posAttr.setXYZ(idx++, a.x, a.y, a.z);
+      posAttr.setXYZ(idx++, b.x, b.y, b.z);
+    }
+    posAttr.needsUpdate = true;
+  }
+
+  function placeStoneAt(row, col) {
+    stoneCount++;
+    const pos = new THREE.Vector3();
+    gridPosition(row, col, pos);
+    const geo = new THREE.CylinderGeometry(0.009, 0.009, 0.004, 16);
+    const mat = new THREE.MeshBasicMaterial({ color: stoneCount % 2 === 0 ? 0xffffff : 0x111111 });
+    const stone = new THREE.Mesh(geo, mat);
+    stone.position.copy(pos);
+    stone.position.y += 0.004;
+    stonesGroup.add(stone);
+    log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
+  }
+
+  // --- Per-frame update loop ---
+  function tick() {
+    cornerIds.forEach((id) => {
+      const el = cornerEls[id];
+      if (el.object3D && el.object3D.visible) {
+        el.object3D.getWorldPosition(cornerPos[id]);
+        if (!cornerCalibrated[id]) {
+          cornerCalibrated[id] = true;
+          updateCornerStatusUI();
+        }
+      }
+    });
+
+    if (allCalibrated() && sceneObj3D) {
+      updateGridPositions();
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  // --- Tap handling: closest dot on screen, adaptive radius ---
+  let lastTapTime = 0;
+  function onTap(event) {
+    const now = Date.now();
+    if (now - lastTapTime < 400) return;
+    lastTapTime = now;
+    if (event.type === 'touchend') event.preventDefault();
+
+    const sceneEl = document.querySelector('a-scene');
+    if (!sceneEl || !sceneEl.camera || !allCalibrated()) {
+      log('Tap ignored: not calibrated yet');
+      return;
+    }
+
+    const touch = event.changedTouches ? event.changedTouches[0] : event;
+    const tapX = touch.clientX;
+    const tapY = touch.clientY;
+    const camera = sceneEl.camera;
+
+    const projected2D = [];
+    dotMeshes.forEach((mesh) => {
+      const p = mesh.position.clone().project(camera);
+      if (p.z > 1) return;
+      const screenX = (p.x * 0.5 + 0.5) * window.innerWidth;
+      const screenY = (-p.y * 0.5 + 0.5) * window.innerHeight;
+      projected2D.push({ mesh, x: screenX, y: screenY });
+    });
+
+    if (projected2D.length < 2) {
+      log('Tap ignored: not enough visible dots');
+      return;
+    }
+
+    let sampleDist = null;
+    const p0 = projected2D[0];
+    for (let i = 1; i < projected2D.length; i++) {
+      const d = Math.hypot(projected2D[i].x - p0.x, projected2D[i].y - p0.y);
+      if (d > 2 && (sampleDist === null || d < sampleDist)) sampleDist = d;
+    }
+    const adaptiveRadius = Math.min(90, Math.max(18, (sampleDist || 40) * 0.65));
+
+    let closest = null, closestDist = Infinity;
+    projected2D.forEach(({ mesh, x, y }) => {
+      const dist = Math.hypot(x - tapX, y - tapY);
+      if (dist < closestDist) { closestDist = dist; closest = mesh; }
+    });
+
+    if (closest && closestDist < adaptiveRadius) {
+      placeStoneAt(closest.userData.row, closest.userData.col);
+    } else {
+      log(`Tap missed — nearest dot was ${closestDist.toFixed(0)}px away (radius: ${adaptiveRadius.toFixed(0)}px)`);
+    }
+  }
+
+  window.addEventListener('touchend', onTap, { passive: false });
+  window.addEventListener('error', (e) => log('ERROR: ' + e.message));
+
+  window.addEventListener('load', () => {
+    const sceneEl = document.querySelector('a-scene');
+    sceneEl.addEventListener('loaded', () => {
+      sceneObj3D = sceneEl.object3D;
+      buildGridObjects();
+      requestAnimationFrame(tick);
+    });
+  });
+</script>
+
+</body>
+</html>
