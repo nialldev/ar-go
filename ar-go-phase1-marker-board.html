@@ -174,7 +174,16 @@
     log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
   }
 
+  let lastTapTime = 0;
   function onTap(event) {
+    if (event.target.closest && event.target.closest('#controls')) return; // let UI buttons behave normally
+
+    const now = Date.now();
+    if (now - lastTapTime < 400) return; // debounce: ignore rapid duplicate/synthetic events
+    lastTapTime = now;
+
+    if (event.type === 'touchend') event.preventDefault(); // stop the synthetic 'click' that would otherwise follow
+
     const sceneEl = document.querySelector('a-scene');
     if (!sceneEl || !sceneEl.camera) {
       log('Tap ignored: camera not ready yet');
@@ -236,8 +245,7 @@
     }
   }
 
-  window.addEventListener('touchend', onTap);
-  window.addEventListener('click', onTap);
+  window.addEventListener('touchend', onTap, { passive: false });
 
   buildGrid();
   updateTransform();
