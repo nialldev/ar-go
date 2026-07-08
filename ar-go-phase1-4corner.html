@@ -120,6 +120,7 @@
   let lineMeshes = [];
   let stonesGroup = null;
   let stoneCount = 0;
+  const stonePool = []; // pre-created, hidden stone+ring pairs — one per intersection
 
   function buildGridObjects() {
     const dotGeo = new THREE.SphereGeometry(0.009, 8, 8);
@@ -148,6 +149,27 @@
 
     stonesGroup = new THREE.Group();
     sceneObj3D.add(stonesGroup);
+
+    // Pre-create every possible stone slot upfront, hidden — matching the same
+    // pattern that makes the dots reliably visible, instead of creating new
+    // objects dynamically at tap-time (which appears not to render in this setup).
+    const blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const stoneGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.015, 24);
+    const ringGeo = new THREE.RingGeometry(0.032, 0.04, 24).rotateX(-Math.PI / 2);
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
+
+    for (let row = 0; row < GRID_SIZE; row++) {
+      for (let col = 0; col < GRID_SIZE; col++) {
+        const stoneMesh = new THREE.Mesh(stoneGeo, blackMat);
+        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+        stoneMesh.visible = false;
+        ringMesh.visible = false;
+        stonesGroup.add(stoneMesh);
+        stonesGroup.add(ringMesh);
+        stonePool.push({ row, col, stoneMesh, ringMesh, blackMat, whiteMat, used: false });
+      }
+    }
   }
 
   const LINE_THICKNESS = 0.005; // 5mm — increased for visibility
@@ -191,20 +213,25 @@
     const pos = new THREE.Vector3();
     gridPosition(row, col, pos);
 
-    const geo = new THREE.CylinderGeometry(0.03, 0.03, 0.015, 24);
-    const mat = new THREE.MeshBasicMaterial({ color: stoneCount % 2 === 0 ? 0xffffff : 0x000000 });
-    const stone = new THREE.Mesh(geo, mat);
-    stone.position.copy(pos);
-    stone.position.y += 0.012;
-    stonesGroup.add(stone);
+    const slot = stonePool.find((s) => s.row === row && s.col === col);
+    if (!slot) {
+      log(`ERROR: no pool slot found for row=${row}, col=${col}`);
+      return;
+    }
+    if (slot.used) {
+      log(`Stone already placed at row=${row}, col=${col} — skipping`);
+      return;
+    }
+    slot.used = true;
 
-    // Bright outline ring so the stone is unmistakable even at a glance
-    const ringGeo = new THREE.RingGeometry(0.032, 0.04, 24).rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.position.copy(pos);
-    ring.position.y += 0.003;
-    stonesGroup.add(ring);
+    slot.stoneMesh.material = stoneCount % 2 === 0 ? slot.whiteMat : slot.blackMat;
+    slot.stoneMesh.position.copy(pos);
+    slot.stoneMesh.position.y += 0.012;
+    slot.stoneMesh.visible = true;
+
+    slot.ringMesh.position.copy(pos);
+    slot.ringMesh.position.y += 0.003;
+    slot.ringMesh.visible = true;
 
     log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
   }
