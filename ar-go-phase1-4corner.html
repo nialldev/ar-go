@@ -201,6 +201,19 @@
       gridPosition(GRID_SIZE - 1, col, b);
       positionLineMesh(lineMeshes[idx++], a, b);
     }
+
+    // Keep already-placed stones locked to their intersection too — otherwise
+    // they stay frozen at their old world position after a recalibration,
+    // while the grid dots move to match the new corners, making them drift apart.
+    stonePool.forEach((s) => {
+      if (s.used) {
+        gridPosition(s.row, s.col, tmpVec);
+        s.stoneMesh.position.copy(tmpVec);
+        s.stoneMesh.position.y += 0.012;
+        s.ringMesh.position.copy(tmpVec);
+        s.ringMesh.position.y += 0.003;
+      }
+    });
   }
 
   function placeStoneAt(row, col) {
