@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>AR Go — WebXR Corner Calibration</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; height: 100%; background: #000; font-family: -apple-system, system-ui, sans-serif; }
+  #status {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    background: rgba(0,0,0,0.75); color: white; padding: 10px 14px; font-size: 13px; line-height: 1.4;
+  }
+  #status.ready { background: rgba(0,120,0,0.75); }
+  #log {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+    background: rgba(0,0,0,0.75); color: #0f8; padding: 10px 14px;
+    font-family: monospace; font-size: 12px; max-height: 24vh; overflow-y: auto; white-space: pre-wrap;
+  }
+  #not-supported {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center;
+    color: white; background: #111; text-align: center; padding: 24px; box-sizing: border-box; font-size: 16px; line-height: 1.5;
+  }
+  button.control {
+    position: fixed; z-index: 60; font-size: 13px; padding: 8px 12px;
+  }
+</style>
+</head>
+<body>
+
+<div id="status">Tap "Start AR", then tap your board's 4 corners in order: top-left, top-right, bottom-left, bottom-right.</div>
+<div id="log">Waiting to start...</div>
+<div id="not-supported" style="display:none;"></div>
+<button id="recalibrate" class="control" style="top:54px; right:10px;">Recalibrate</button>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/ARButton.js';
+
+const GRID_SIZE = 19;
+let camera, scene, renderer;
+let reticle;
+let hitTestSource = null;
+let hitTestSourceRequested = false;
+
+const cornerNames = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+let corners = []; // THREE.Vector3[]
+let calibrated = false;
+
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+
+function log(msg) {
+  logEl.textContent = msg + '\n' + logEl.textContent;
+}
+
+window.addEventListener('error', (e) => log('ERROR: ' + e.message));
+
+try {
+  init();
+} catch (err) {
+  log('init() failed: ' + err.message);
+}
+
+function init() {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+  const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
+  light.position.set(0.5, 1, 0.25);
+  scene.add(light);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  container.appendChild(renderer.domElement);
+
+  if (navigator.xr) {
+    navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+      if (!supported) {
+        showNotSupported("WebXR AR isn't supported on this device/browser. Try the latest Chrome on Android.");
+      } else {
+        document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
+      }
+    }).catch((err) => showNotSupported('isSessionSupported check failed: ' + err.message));
+  } else {
+    showNotSupported("WebXR isn't available in this browser.");
+  }
+
+  const reticleGeometry = new THREE.RingGeometry(0.04, 0.05, 32).rotateX(-Math.PI / 2);
+  const reticleMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+  reticle = new THREE.Mesh(reticleGeometry, reticleMaterial);
+  reticle.matrixAutoUpdate = false;
+  reticle.visible = false;
+  scene.add(reticle);
+
+  const controller = renderer.xr.getController(0);
+  controller.addEventListener('select', onSelect);
+  scene.add(controller);
+
+  window.addEventListener('resize', onWindowResize);
+  renderer.setAnimationLoop(render);
+}
+
+function showNotSupported(message) {
+  statusEl.style.display = 'none';
+  const el = document.getElementById('not-supported');
+  el.style.display = 'flex';
+  el.textContent = message;
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// --- Corner calibration via hit-test taps ---
+function onSelect() {
+  if (!reticle.visible) return;
+
+  if (!calibrated) {
+    const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+    corners.push(pos.clone());
+    log(`Corner ${corners.length} (${cornerNames[corners.length - 1]}) placed at x=${pos.x.toFixed(3)}, y=${pos.y.toFixed(3)}, z=${pos.z.toFixed(3)}`);
+
+    // Visual marker for the tapped corner
+    const markerGeo = new THREE.SphereGeometry(0.02, 12, 12);
+    const markerMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+    const marker = new THREE.Mesh(markerGeo, markerMat);
+    marker.position.copy(pos);
+    scene.add(marker);
+
+    if (corners.length < 4) {
+      statusEl.textContent = `Corner ${corners.length}/4 placed. Now tap the board's ${cornerNames[corners.length]} corner.`;
+    } else {
+      calibrated = true;
+      statusEl.textContent = 'Board calibrated! Tap a grid dot to place a stone.';
+      statusEl.classList.add('ready');
+      buildGrid();
+    }
+    return;
+  }
+
+  // Once calibrated, taps are handled by the separate tap-to-place logic (onTouchTap),
+  // not by the WebXR 'select' event, since we need screen-space nearest-dot matching.
+}
+
+function resetCalibration() {
+  corners = [];
+  calibrated = false;
+  clearGrid();
+  statusEl.classList.remove('ready');
+  statusEl.textContent = 'Recalibrating — tap the board\'s top-left corner.';
+  log('Recalibration started');
+}
+
+document.getElementById('recalibrate').addEventListener('click', resetCalibration);
+
+// --- Grid construction (reusing the same bilinear approach, now from 4 fixed real-world taps) ---
+const dotMeshes = [];
+let lineMeshes = [];
+const stonePool = [];
+let stoneCount = 0;
+let gridBuilt = false;
+
+function gridPosition(row, col, target) {
+  const u = col / (GRID_SIZE - 1);
+  const v = row / (GRID_SIZE - 1);
+  const tl = corners[0], tr = corners[1], bl = corners[2], br = corners[3];
+
+  target.x = tl.x * (1 - u) * (1 - v) + tr.x * u * (1 - v) + bl.x * (1 - u) * v + br.x * u * v;
+  target.y = tl.y * (1 - u) * (1 - v) + tr.y * u * (1 - v) + bl.y * (1 - u) * v + br.y * u * v;
+  target.z = tl.z * (1 - u) * (1 - v) + tr.z * u * (1 - v) + bl.z * (1 - u) * v + br.z * u * v;
+  return target;
+}
+
+const LINE_THICKNESS = 0.005;
+function positionLineMesh(mesh, a, b) {
+  const mid = a.clone().add(b).multiplyScalar(0.5);
+  const dir = b.clone().sub(a);
+  const length = Math.max(dir.length(), 0.0001);
+  mesh.position.copy(mid);
+  mesh.scale.set(length, LINE_THICKNESS, LINE_THICKNESS);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir.normalize());
+}
+
+function clearGrid() {
+  dotMeshes.forEach((m) => scene.remove(m));
+  dotMeshes.length = 0;
+  lineMeshes.forEach((m) => scene.remove(m));
+  lineMeshes.length = 0;
+  stonePool.forEach((s) => { scene.remove(s.stoneMesh); scene.remove(s.ringMesh); });
+  stonePool.length = 0;
+  stoneCount = 0;
+  gridBuilt = false;
+}
+
+function buildGrid() {
+  const dotGeo = new THREE.SphereGeometry(0.009, 8, 8);
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.85 });
+
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const mesh = new THREE.Mesh(dotGeo, dotMat);
+      mesh.userData.row = row;
+      mesh.userData.col = col;
+      gridPosition(row, col, mesh.position);
+      scene.add(mesh);
+      dotMeshes.push(mesh);
+    }
+  }
+
+  const lineBoxGeo = new THREE.BoxGeometry(1, 1, 1);
+  const lineBoxMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+
+  for (let row = 0; row < GRID_SIZE; row++) {
+    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+    gridPosition(row, 0, a);
+    gridPosition(row, GRID_SIZE - 1, b);
+    positionLineMesh(mesh, a, b);
+    scene.add(mesh);
+    lineMeshes.push(mesh);
+  }
+  for (let col = 0; col < GRID_SIZE; col++) {
+    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+    gridPosition(0, col, a);
+    gridPosition(GRID_SIZE - 1, col, b);
+    positionLineMesh(mesh, a, b);
+    scene.add(mesh);
+    lineMeshes.push(mesh);
+  }
+
+  const blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const stoneGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.02, 24);
+  const ringGeo = new THREE.RingGeometry(0.047, 0.058, 24).rotateX(-Math.PI / 2);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
+
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const stoneMesh = new THREE.Mesh(stoneGeo, blackMat);
+      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+      stoneMesh.visible = false;
+      ringMesh.visible = false;
+      scene.add(stoneMesh);
+      scene.add(ringMesh);
+      stonePool.push({ row, col, stoneMesh, ringMesh, blackMat, whiteMat, used: false });
+    }
+  }
+
+  gridBuilt = true;
+  // Reticle no longer needed once calibrated
+  reticle.visible = false;
+}
+
+function placeStoneAt(row, col) {
+  stoneCount++;
+  const slot = stonePool.find((s) => s.row === row && s.col === col);
+  if (!slot) { log(`ERROR: no pool slot for row=${row}, col=${col}`); return; }
+  if (slot.used) { log(`Stone already placed at row=${row}, col=${col}`); return; }
+  slot.used = true;
+
+  const pos = new THREE.Vector3();
+  gridPosition(row, col, pos);
+
+  slot.stoneMesh.material = stoneCount % 2 === 0 ? slot.whiteMat : slot.blackMat;
+  slot.stoneMesh.position.copy(pos);
+  slot.stoneMesh.position.y += 0.012;
+  slot.stoneMesh.visible = true;
+
+  slot.ringMesh.position.copy(pos);
+  slot.ringMesh.position.y += 0.003;
+  slot.ringMesh.visible = true;
+
+  log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
+}
+
+// --- Tap-to-place: screen-space nearest dot (only active once calibrated) ---
+let lastTapTime = 0;
+function onTouchTap(event) {
+  if (!gridBuilt) return; // calibration taps are handled via WebXR 'select' instead
+  if (event.target.closest && event.target.closest('.control')) return;
+
+  const now = Date.now();
+  if (now - lastTapTime < 400) return;
+  lastTapTime = now;
+  if (event.type === 'touchend') event.preventDefault();
+
+  const touch = event.changedTouches ? event.changedTouches[0] : event;
+  const tapX = touch.clientX, tapY = touch.clientY;
+
+  const projected2D = [];
+  dotMeshes.forEach((mesh) => {
+    const p = mesh.position.clone().project(camera);
+    if (p.z > 1) return;
+    const screenX = (p.x * 0.5 + 0.5) * window.innerWidth;
+    const screenY = (-p.y * 0.5 + 0.5) * window.innerHeight;
+    projected2D.push({ mesh, x: screenX, y: screenY });
+  });
+
+  if (projected2D.length < 2) return;
+
+  let sampleDist = null;
+  const p0 = projected2D[0];
+  for (let i = 1; i < projected2D.length; i++) {
+    const d = Math.hypot(projected2D[i].x - p0.x, projected2D[i].y - p0.y);
+    if (d > 2 && (sampleDist === null || d < sampleDist)) sampleDist = d;
+  }
+  const adaptiveRadius = Math.min(90, Math.max(18, (sampleDist || 40) * 0.65));
+
+  let closest = null, closestDist = Infinity;
+  projected2D.forEach(({ mesh, x, y }) => {
+    const dist = Math.hypot(x - tapX, y - tapY);
+    if (dist < closestDist) { closestDist = dist; closest = mesh; }
+  });
+
+  if (closest && closestDist < adaptiveRadius) {
+    placeStoneAt(closest.userData.row, closest.userData.col);
+  } else {
+    log(`Tap missed — nearest dot was ${closestDist.toFixed(0)}px away (radius: ${adaptiveRadius.toFixed(0)}px)`);
+  }
+}
+
+window.addEventListener('touchend', onTouchTap, { passive: false });
+window.addEventListener('click', onTouchTap);
+
+// --- Render loop with hit-test for calibration reticle ---
+function render(timestamp, frame) {
+  if (frame) {
+    const referenceSpace = renderer.xr.getReferenceSpace();
+    const session = renderer.xr.getSession();
+
+    if (!hitTestSourceRequested) {
+      session.requestReferenceSpace('viewer').then((viewerSpace) => {
+        session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+          hitTestSource = source;
+        });
+      });
+      session.addEventListener('end', () => {
+        hitTestSourceRequested = false;
+        hitTestSource = null;
+      });
+      hitTestSourceRequested = true;
+    }
+
+    if (hitTestSource && !calibrated) {
+      const hitTestResults = frame.getHitTestResults(hitTestSource);
+      if (hitTestResults.length > 0) {
+        const hit = hitTestResults[0];
+        reticle.visible = true;
+        reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+      } else {
+        reticle.visible = false;
+      }
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+</script>
+
+</body>
+</html>
