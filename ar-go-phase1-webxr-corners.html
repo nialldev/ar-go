@@ -221,10 +221,14 @@ function updateAdjustStatus() {
 
 function finalizeCalibration() {
   try {
+    log('Confirm button pressed — starting finalizeCalibration');
     adjusting = false;
     calibrated = true;
-    hideAdjustUI();
-    cornerMarkers.forEach((m) => scene.remove(m));
+    log('About to hide adjust UI...');
+    // TEMPORARILY SKIPPING hideAdjustUI() and corner marker removal for this diagnostic test
+    // hideAdjustUI();
+    // cornerMarkers.forEach((m) => scene.remove(m));
+    log('Skipped UI hide/marker removal for this test');
     statusEl.textContent = 'Board calibrated! Tap a grid dot to place a stone.';
     statusEl.classList.add('ready');
     log('Calling buildGrid()...');
