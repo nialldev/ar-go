@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>AR Go — Phase 0: Hello AR</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    height: 100%;
+    background: #000;
+    font-family: -apple-system, system-ui, sans-serif;
+  }
+  #info {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    padding: 14px;
+    box-sizing: border-box;
+    color: white;
+    text-align: center;
+    z-index: 10;
+    pointer-events: none;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+    font-size: 14px;
+  }
+  #not-supported {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    background: #111;
+    text-align: center;
+    padding: 24px;
+    box-sizing: border-box;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+
+<div id="info">Tap "Start AR", then point your phone at a flat surface (like a table or your Go board) and tap the screen to place a cube.</div>
+<div id="not-supported" style="display:none;"></div>
+<div id="error-box" style="display:none; position:fixed; top:0; left:0; right:0; padding:14px; background:#b00020; color:white; font-size:13px; z-index:20; white-space:pre-wrap; word-break:break-word;"></div>
+
+<script>
+  window.addEventListener('error', function (e) {
+    showError('Script error: ' + e.message + ' (line ' + e.lineno + ')');
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    showError('Promise error: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+  function showError(msg) {
+    const box = document.getElementById('error-box');
+    box.style.display = 'block';
+    box.textContent = (box.textContent ? box.textContent + '\n' : '') + msg;
+  }
+</script>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/ARButton.js';
+
+let camera, scene, renderer;
+let reticle;
+let hitTestSource = null;
+let hitTestSourceRequested = false;
+
+try {
+  init();
+} catch (err) {
+  showError('init() failed: ' + err.message);
+}
+
+function init() {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+
+  scene = new THREE.Scene();
+
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+  const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
+  light.position.set(0.5, 1, 0.25);
+  scene.add(light);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  container.appendChild(renderer.domElement);
+
+  // Check WebXR AR support and show a clear message if not available
+  if (navigator.xr) {
+    navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+      if (!supported) {
+        showNotSupported("Your browser reports WebXR is available, but immersive AR sessions aren't supported on this device/browser. Try the latest Chrome on Android.");
+      } else {
+        try {
+          document.body.appendChild(
+            ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] })
+          );
+        } catch (err) {
+          showError('Failed to create AR button: ' + err.message);
+        }
+      }
+    }).catch((err) => {
+      showError('isSessionSupported check failed: ' + err.message);
+    });
+  } else {
+    showNotSupported("WebXR isn't available in this browser. Open this page in Chrome on an ARCore-supported Android phone, not inside an embedded preview.");
+  }
+
+  // Reticle: a ring that shows where a surface has been detected
+  const reticleGeometry = new THREE.RingGeometry(0.06, 0.08, 32).rotateX(-Math.PI / 2);
+  const reticleMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+  reticle = new THREE.Mesh(reticleGeometry, reticleMaterial);
+  reticle.matrixAutoUpdate = false;
+  reticle.visible = false;
+  scene.add(reticle);
+
+  // Tap to place a cube at the reticle's current position
+  const controller = renderer.xr.getController(0);
+  controller.addEventListener('select', onSelect);
+  scene.add(controller);
+
+  window.addEventListener('resize', onWindowResize);
+
+  renderer.setAnimationLoop(render);
+}
+
+function onSelect() {
+  if (reticle.visible) {
+    const geometry = new THREE.BoxGeometry(0.05, 0.05, 0.05);
+    const material = new THREE.MeshStandardMaterial({ color: 0x2288ff });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.setFromMatrixPosition(reticle.matrix);
+    mesh.quaternion.setFromRotationMatrix(reticle.matrix);
+    scene.add(mesh);
+  }
+}
+
+function showNotSupported(message) {
+  document.getElementById('info').style.display = 'none';
+  const el = document.getElementById('not-supported');
+  el.style.display = 'flex';
+  el.textContent = message;
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function render(timestamp, frame) {
+  if (frame) {
+    const referenceSpace = renderer.xr.getReferenceSpace();
+    const session = renderer.xr.getSession();
+
+    if (!hitTestSourceRequested) {
+      session.requestReferenceSpace('viewer').then((viewerSpace) => {
+        session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+          hitTestSource = source;
+        });
+      });
+
+      session.addEventListener('end', () => {
+        hitTestSourceRequested = false;
+        hitTestSource = null;
+      });
+
+      hitTestSourceRequested = true;
+    }
+
+    if (hitTestSource) {
+      const hitTestResults = frame.getHitTestResults(hitTestSource);
+
+      if (hitTestResults.length > 0) {
+        const hit = hitTestResults[0];
+        reticle.visible = true;
+        reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+      } else {
+        reticle.visible = false;
+      }
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+</script>
+
+</body>
+</html>
