@@ -117,7 +117,7 @@
   // --- Build grid dots as raw three.js meshes for performance (updated every frame) ---
   let sceneObj3D = null;
   const dotMeshes = []; // {mesh, row, col}
-  let lineSegments = null;
+  let lineMeshes = [];
   let stonesGroup = null;
   let stoneCount = 0;
 
@@ -135,49 +135,55 @@
       }
     }
 
-    // One shared LineSegments object for all grid lines (far more efficient than many entities)
-    const lineCount = GRID_SIZE * 2; // horizontal + vertical lines
-    const positions = new Float32Array(lineCount * 2 * 3); // 2 points per line, 3 floats per point
-    const lineGeo = new THREE.BufferGeometry();
-    lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x00e5ff });
-    lineSegments = new THREE.LineSegments(lineGeo, lineMat);
-    sceneObj3D.add(lineSegments);
+    // Grid lines as solid 3D boxes instead of GL lines — GL LineBasicMaterial
+    // renders at a fixed ~1px width on most mobile browsers regardless of settings,
+    // making it nearly invisible. Solid boxes are reliably visible like the dots/stones.
+    const lineBoxGeo = new THREE.BoxGeometry(1, 1, 1);
+    const lineBoxMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
+    for (let i = 0; i < GRID_SIZE * 2; i++) {
+      const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+      sceneObj3D.add(mesh);
+      lineMeshes.push(mesh);
+    }
 
     stonesGroup = new THREE.Group();
     sceneObj3D.add(stonesGroup);
+  }
+
+  const LINE_THICKNESS = 0.0025; // 2.5mm — adjust if lines look too thick/thin
+
+  function positionLineMesh(mesh, a, b) {
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    const dir = b.clone().sub(a);
+    const length = Math.max(dir.length(), 0.0001);
+    mesh.position.copy(mid);
+    mesh.scale.set(length, LINE_THICKNESS, LINE_THICKNESS);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir.normalize());
   }
 
   const tmpVec = new THREE.Vector3();
 
   function updateGridPositions() {
     // Dots
-    dotMeshes.forEach(({ userData }) => {});
     dotMeshes.forEach((mesh) => {
       gridPosition(mesh.userData.row, mesh.userData.col, tmpVec);
       mesh.position.copy(tmpVec);
     });
 
-    // Lines
-    const posAttr = lineSegments.geometry.attributes.position;
+    // Lines (as solid boxes)
     let idx = 0;
     const a = new THREE.Vector3(), b = new THREE.Vector3();
 
-    // Horizontal lines: one per row, from col 0 to col GRID_SIZE-1
     for (let row = 0; row < GRID_SIZE; row++) {
       gridPosition(row, 0, a);
       gridPosition(row, GRID_SIZE - 1, b);
-      posAttr.setXYZ(idx++, a.x, a.y, a.z);
-      posAttr.setXYZ(idx++, b.x, b.y, b.z);
+      positionLineMesh(lineMeshes[idx++], a, b);
     }
-    // Vertical lines: one per col, from row 0 to row GRID_SIZE-1
     for (let col = 0; col < GRID_SIZE; col++) {
       gridPosition(0, col, a);
       gridPosition(GRID_SIZE - 1, col, b);
-      posAttr.setXYZ(idx++, a.x, a.y, a.z);
-      posAttr.setXYZ(idx++, b.x, b.y, b.z);
+      positionLineMesh(lineMeshes[idx++], a, b);
     }
-    posAttr.needsUpdate = true;
   }
 
   function placeStoneAt(row, col) {
