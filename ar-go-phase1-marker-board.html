@@ -46,7 +46,7 @@
   renderer="logarithmicDepthBuffer: true; antialias: true"
   arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
 >
-  <a-marker preset="hiro" id="marker" size="0.146" smooth="true" smoothCount="10" smoothTolerance="0.01" smoothThreshold="5">
+  <a-marker preset="hiro" id="marker" size="0.146" smooth="true" smoothCount="20" smoothTolerance="0.005" smoothThreshold="10">
     <a-entity id="board-root"></a-entity>
   </a-marker>
 
@@ -56,7 +56,7 @@
 <div id="controls" style="position:fixed; bottom:32vh; left:0; right:0; z-index:50; display:flex; flex-direction:column; align-items:center; gap:8px; font-family:-apple-system, system-ui, sans-serif;">
   <div style="display:flex; gap:10px;">
     <button id="smaller" style="font-size:18px; padding:8px 14px;">− Scale</button>
-    <span id="spacing-label" style="background:rgba(0,0,0,0.75); color:white; padding:8px 12px; border-radius:6px;">2.3cm</span>
+    <span id="spacing-label" style="background:rgba(0,0,0,0.75); color:white; padding:8px 12px; border-radius:6px;">2.1 x 2.2cm</span>
     <button id="bigger" style="font-size:18px; padding:8px 14px;">+ Scale</button>
   </div>
   <div style="display:flex; gap:6px; align-items:center;">
@@ -72,10 +72,12 @@
 
 <script>
   const GRID_SIZE = 19;
-  let SPACING = 0.023;
-  let OFFSET_X = -0.073; // starting guess: half the 14.6cm marker, since marker origin is its CENTER not corner
+  const BASE_SPACING_X = 0.021; // measured: 2.1cm width between intersections
+  const BASE_SPACING_Z = 0.022; // measured: 2.2cm height between intersections
+  let scaleFactor = 1.0;        // fine-tune multiplier via the Scale buttons, starts accurate at 1.0
+  let OFFSET_X = -0.073;
   let OFFSET_Z = -0.073;
-  let ROTATION = 0; // degrees, for fine-tuning if the marker was taped slightly rotated
+  let ROTATION = 0;
   const boardRoot = document.getElementById('board-root');
   const marker = document.getElementById('marker');
   const statusEl = document.getElementById('status');
@@ -108,21 +110,25 @@
     while (boardRoot.firstChild) boardRoot.removeChild(boardRoot.firstChild);
     stoneCount = 0;
 
-    const totalSize = SPACING * (GRID_SIZE - 1);
+    const spacingX = BASE_SPACING_X * scaleFactor;
+    const spacingZ = BASE_SPACING_Z * scaleFactor;
+    const totalX = spacingX * (GRID_SIZE - 1);
+    const totalZ = spacingZ * (GRID_SIZE - 1);
 
     for (let i = 0; i < GRID_SIZE; i++) {
-      const offset = i * SPACING;
-      addLine(0, offset, totalSize, offset);
-      addLine(offset, 0, offset, totalSize);
+      const rowZ = i * spacingZ;
+      const colX = i * spacingX;
+      addLine(0, rowZ, totalX, rowZ);   // horizontal line
+      addLine(colX, 0, colX, totalZ);   // vertical line
     }
 
     for (let row = 0; row < GRID_SIZE; row++) {
       for (let col = 0; col < GRID_SIZE; col++) {
         const dot = document.createElement('a-sphere');
-        dot.setAttribute('radius', (SPACING * 0.25).toFixed(4));
+        dot.setAttribute('radius', (Math.min(spacingX, spacingZ) * 0.25).toFixed(4));
         dot.setAttribute('color', '#ffcc00');
         dot.setAttribute('opacity', '0.7');
-        dot.setAttribute('position', `${col * SPACING} 0.002 ${row * SPACING}`);
+        dot.setAttribute('position', `${col * spacingX} 0.002 ${row * spacingZ}`);
         dot.classList.add('intersection');
         dot.dataset.row = row;
         dot.dataset.col = col;
@@ -130,7 +136,7 @@
       }
     }
 
-    spacingLabel.textContent = (SPACING * 100).toFixed(1) + 'cm';
+    spacingLabel.textContent = (spacingX*100).toFixed(2) + ' x ' + (spacingZ*100).toFixed(2) + 'cm';
   }
 
   function addLine(x1, z1, x2, z2) {
@@ -143,8 +149,8 @@
     boardRoot.appendChild(line);
   }
 
-  document.getElementById('bigger').addEventListener('click', () => { SPACING *= 1.1; buildGrid(); });
-  document.getElementById('smaller').addEventListener('click', () => { SPACING *= 0.9; buildGrid(); });
+  document.getElementById('bigger').addEventListener('click', () => { scaleFactor += 0.02; buildGrid(); });
+  document.getElementById('smaller').addEventListener('click', () => { scaleFactor = Math.max(0.5, scaleFactor - 0.02); buildGrid(); });
 
   const NUDGE = 0.01; // 1cm per tap
   document.getElementById('left').addEventListener('click', () => { OFFSET_X -= NUDGE; updateTransform(); });
@@ -156,11 +162,13 @@
 
   function placeStoneAt(row, col) {
     stoneCount++;
+    const spacingX = BASE_SPACING_X * scaleFactor;
+    const spacingZ = BASE_SPACING_Z * scaleFactor;
     const stone = document.createElement('a-cylinder');
-    stone.setAttribute('radius', (SPACING * 0.4).toFixed(4));
+    stone.setAttribute('radius', (Math.min(spacingX, spacingZ) * 0.4).toFixed(4));
     stone.setAttribute('height', '0.004');
     stone.setAttribute('color', stoneCount % 2 === 0 ? '#ffffff' : '#111111');
-    stone.setAttribute('position', `${col * SPACING} 0.006 ${row * SPACING}`);
+    stone.setAttribute('position', `${col * spacingX} 0.006 ${row * spacingZ}`);
     boardRoot.appendChild(stone);
     log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
   }
@@ -173,29 +181,43 @@
     }
 
     const touch = event.changedTouches ? event.changedTouches[0] : event;
-    const x = (touch.clientX / window.innerWidth) * 2 - 1;
-    const y = -(touch.clientY / window.innerHeight) * 2 + 1;
+    const tapX = touch.clientX;
+    const tapY = touch.clientY;
 
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera({ x, y }, sceneEl.camera);
+    const camera = sceneEl.camera;
+    const dotEls = Array.from(document.querySelectorAll('.intersection'));
 
-    const dots = Array.from(document.querySelectorAll('.intersection'))
-      .map((el) => el.object3D)
-      .filter(Boolean);
+    let closest = null;
+    let closestDist = Infinity;
+    const worldPos = new THREE.Vector3();
 
-    const intersects = raycaster.intersectObjects(dots, true);
+    dotEls.forEach((el) => {
+      if (!el.object3D) return;
+      el.object3D.getWorldPosition(worldPos);
 
-    if (intersects.length > 0) {
-      let obj = intersects[0].object;
-      while (obj && !obj.el) obj = obj.parent;
-      if (obj && obj.el) {
-        const row = parseInt(obj.el.dataset.row, 10);
-        const col = parseInt(obj.el.dataset.col, 10);
-        placeStoneAt(row, col);
-        return;
+      // Skip points behind the camera
+      const projected = worldPos.clone().project(camera);
+      if (projected.z > 1) return;
+
+      const screenX = (projected.x * 0.5 + 0.5) * window.innerWidth;
+      const screenY = (-projected.y * 0.5 + 0.5) * window.innerHeight;
+
+      const dist = Math.hypot(screenX - tapX, screenY - tapY);
+      if (dist < closestDist) {
+        closestDist = dist;
+        closest = el;
       }
+    });
+
+    const TAP_RADIUS_PX = 60; // how forgiving the tap needs to be, in screen pixels
+
+    if (closest && closestDist < TAP_RADIUS_PX) {
+      const row = parseInt(closest.dataset.row, 10);
+      const col = parseInt(closest.dataset.col, 10);
+      placeStoneAt(row, col);
+    } else {
+      log(`Tap missed — nearest dot was ${closestDist.toFixed(0)}px away`);
     }
-    log(`Tap missed — no intersection dot under (${touch.clientX}, ${touch.clientY})`);
   }
 
   window.addEventListener('touchend', onTap);
