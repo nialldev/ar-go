@@ -32,7 +32,7 @@
 <div id="not-supported" style="display:none;"></div>
 <button id="recalibrate" class="control" style="top:54px; right:10px;">Recalibrate</button>
 
-<div id="adjust-ui" style="display:none; position:fixed; bottom:0; left:0; right:0; z-index:60; background:rgba(0,0,0,0.75); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
+<div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.75); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
   <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
     <button class="corner-select control" data-corner="0" style="position:static;">TL</button>
     <button class="corner-select control" data-corner="1" style="position:static;">TR</button>
@@ -184,11 +184,20 @@ function createRingCrosshairMarker(color) {
 }
 
 function onSelect() {
+  if (adjusting) {
+    // Tap anywhere on the AR view (not on the button panel) to confirm —
+    // using the same reliable mechanism that's placed all 4 corners without
+    // ever crashing, instead of the DOM "Confirm" button, which we suspect
+    // may be the actual trigger for the crashes.
+    log('Tap-to-confirm triggered via select event');
+    finalizeCalibration();
+    return;
+  }
+
   if (!reticle.visible) {
     log('Tap ignored: no surface detected right now (reticle not visible)');
     return;
   }
-  if (adjusting) return;
 
   if (!calibrated) {
     const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
@@ -221,19 +230,13 @@ function updateAdjustStatus() {
 
 function finalizeCalibration() {
   try {
-    log('Confirm button pressed — starting finalizeCalibration');
     adjusting = false;
     calibrated = true;
-    log('About to hide adjust UI...');
-    // TEMPORARILY SKIPPING hideAdjustUI() and corner marker removal for this diagnostic test
-    // hideAdjustUI();
-    // cornerMarkers.forEach((m) => scene.remove(m));
-    log('Skipped UI hide/marker removal for this test');
+    hideAdjustUI();
+    cornerMarkers.forEach((m) => scene.remove(m));
     statusEl.textContent = 'Board calibrated! Tap a grid dot to place a stone.';
     statusEl.classList.add('ready');
-    log('Calling buildGrid()...');
     buildGrid();
-    log('buildGrid() completed successfully');
   } catch (err) {
     log('ERROR in finalizeCalibration/buildGrid: ' + err.message);
     console.error(err);
@@ -327,16 +330,46 @@ function clearGrid() {
 }
 
 function buildGrid() {
-  // TEMPORARY DIAGNOSTIC VERSION — deliberately minimal.
-  // If this still crashes, the problem isn't our grid-building code at all —
-  // it's something about the WebXR session/dom-overlay itself at this point.
-  log('buildGrid: about to add ONE test cube');
-  const testGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05);
-  const testMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-  const testCube = new THREE.Mesh(testGeo, testMat);
-  gridPosition(9, 9, testCube.position); // center of the board
-  scene.add(testCube);
-  log('buildGrid: test cube added successfully');
+  const dotGeo = new THREE.SphereGeometry(0.005, 8, 8);
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.85 });
+
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const mesh = new THREE.Mesh(dotGeo, dotMat);
+      mesh.userData.row = row;
+      mesh.userData.col = col;
+      gridPosition(row, col, mesh.position);
+      scene.add(mesh);
+      dotMeshes.push(mesh);
+    }
+  }
+
+  const lineBoxGeo = new THREE.BoxGeometry(1, 1, 1);
+  const lineBoxMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+
+  for (let row = 0; row < GRID_SIZE; row++) {
+    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+    gridPosition(row, 0, a);
+    gridPosition(row, GRID_SIZE - 1, b);
+    positionLineMesh(mesh, a, b);
+    scene.add(mesh);
+    lineMeshes.push(mesh);
+  }
+  for (let col = 0; col < GRID_SIZE; col++) {
+    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+    gridPosition(0, col, a);
+    gridPosition(GRID_SIZE - 1, col, b);
+    positionLineMesh(mesh, a, b);
+    scene.add(mesh);
+    lineMeshes.push(mesh);
+  }
+
+  stoneAssets.blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  stoneAssets.whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  stoneAssets.stoneGeo = new THREE.CylinderGeometry(0.011, 0.011, 0.006, 24);
+  stoneAssets.ringGeo = new THREE.RingGeometry(0.0115, 0.0145, 24).rotateX(-Math.PI / 2);
+  stoneAssets.ringMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
 
   gridBuilt = true;
   reticle.visible = false;
