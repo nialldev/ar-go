@@ -224,15 +224,15 @@ function updateAdjustStatus() {
 }
 
 function finalizeCalibration() {
-  log('*** finalizeCalibration() called — this should ONLY happen from the green Confirm button ***');
   try {
     adjusting = false;
     calibrated = true;
     hideAdjustUI();
     cornerMarkers.forEach((m) => scene.remove(m));
-    statusEl.textContent = 'Board calibrated! Tap a grid dot to place a stone.';
     statusEl.classList.add('ready');
     buildGrid();
+    resetBoardState();
+    updateTurnStatus();
   } catch (err) {
     log('ERROR in finalizeCalibration/buildGrid: ' + err.message);
     console.error(err);
@@ -324,6 +324,7 @@ function clearGrid() {
   placedStones.length = 0;
   stoneCount = 0;
   gridBuilt = false;
+  resetBoardState();
 }
 
 function buildGrid() {
@@ -372,19 +373,115 @@ function buildGrid() {
   reticle.visible = false;
 }
 
-const placedStones = []; // {row, col, stoneMesh, ringMesh}
+// --- Go rules engine ---
+const EMPTY = 0, BLACK = 1, WHITE = 2;
+let boardState = [];
+for (let r = 0; r < GRID_SIZE; r++) boardState.push(new Array(GRID_SIZE).fill(EMPTY));
+let currentTurn = BLACK;
+
+function resetBoardState() {
+  boardState = [];
+  for (let r = 0; r < GRID_SIZE; r++) boardState.push(new Array(GRID_SIZE).fill(EMPTY));
+  currentTurn = BLACK;
+}
+
+function neighborsOf(row, col) {
+  const list = [];
+  if (row > 0) list.push([row - 1, col]);
+  if (row < GRID_SIZE - 1) list.push([row + 1, col]);
+  if (col > 0) list.push([row, col - 1]);
+  if (col < GRID_SIZE - 1) list.push([row, col + 1]);
+  return list;
+}
+
+function getGroup(row, col) {
+  const color = boardState[row][col];
+  const visited = new Set();
+  const stack = [[row, col]];
+  const group = [];
+  while (stack.length) {
+    const [r, c] = stack.pop();
+    const key = r + ',' + c;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    group.push([r, c]);
+    neighborsOf(r, c).forEach(([nr, nc]) => {
+      if (boardState[nr][nc] === color && !visited.has(nr + ',' + nc)) stack.push([nr, nc]);
+    });
+  }
+  return group;
+}
+
+function groupLiberties(group) {
+  const libs = new Set();
+  group.forEach(([r, c]) => {
+    neighborsOf(r, c).forEach(([nr, nc]) => {
+      if (boardState[nr][nc] === EMPTY) libs.add(nr + ',' + nc);
+    });
+  });
+  return libs.size;
+}
+
+function updateTurnStatus() {
+  const turnName = currentTurn === BLACK ? 'Black' : 'White';
+  statusEl.textContent = `${turnName}'s turn — tap a dot to place a stone.`;
+}
+
+const placedStones = []; // {row, col, stoneMesh, ringMesh, color}
+
+function removeStoneAt(row, col) {
+  const idx = placedStones.findIndex((s) => s.row === row && s.col === col);
+  if (idx !== -1) {
+    scene.remove(placedStones[idx].stoneMesh);
+    scene.remove(placedStones[idx].ringMesh);
+    placedStones.splice(idx, 1);
+  }
+}
 
 function placeStoneAt(row, col) {
-  if (placedStones.some((s) => s.row === row && s.col === col)) {
-    log(`Stone already placed at row=${row}, col=${col}`);
+  if (boardState[row][col] !== EMPTY) {
+    log(`Illegal move: row=${row}, col=${col} is already occupied`);
     return;
   }
-  stoneCount++;
 
+  const placingColor = currentTurn;
+  const opponentColor = placingColor === BLACK ? WHITE : BLACK;
+
+  // Tentatively place, then check for captures of adjacent opponent groups
+  boardState[row][col] = placingColor;
+
+  const capturedSet = new Set();
+  neighborsOf(row, col).forEach(([nr, nc]) => {
+    if (boardState[nr][nc] === opponentColor) {
+      const group = getGroup(nr, nc);
+      if (groupLiberties(group) === 0) {
+        group.forEach(([r, c]) => capturedSet.add(r + ',' + c));
+      }
+    }
+  });
+
+  // Remove captured stones from board state before checking our own liberties
+  capturedSet.forEach((key) => {
+    const [r, c] = key.split(',').map(Number);
+    boardState[r][c] = EMPTY;
+  });
+
+  const ownGroup = getGroup(row, col);
+  const ownLiberties = groupLiberties(ownGroup);
+
+  if (ownLiberties === 0 && capturedSet.size === 0) {
+    // Illegal suicide move — undo everything
+    boardState[row][col] = EMPTY;
+    log(`Illegal move: row=${row}, col=${col} would have no liberties (suicide)`);
+    return;
+  }
+
+  // Legal move — render it
+  stoneCount++;
   const pos = new THREE.Vector3();
   gridPosition(row, col, pos);
 
-  const mat = stoneCount % 2 === 0 ? stoneAssets.whiteMat : stoneAssets.blackMat;
+  const mat = placingColor === BLACK ? stoneAssets.blackMat : stoneAssets.whiteMat;
   const stoneMesh = new THREE.Mesh(stoneAssets.stoneGeo, mat);
   stoneMesh.position.copy(pos);
   stoneMesh.position.y += 0.003;
@@ -395,8 +492,20 @@ function placeStoneAt(row, col) {
   ringMesh.position.y += 0.001;
   scene.add(ringMesh);
 
-  placedStones.push({ row, col, stoneMesh, ringMesh });
-  log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
+  placedStones.push({ row, col, stoneMesh, ringMesh, color: placingColor });
+
+  // Remove captured stones visually
+  capturedSet.forEach((key) => {
+    const [r, c] = key.split(',').map(Number);
+    removeStoneAt(r, c);
+  });
+
+  const colorName = placingColor === BLACK ? 'Black' : 'White';
+  const captureNote = capturedSet.size > 0 ? ` — captured ${capturedSet.size} stone(s)!` : '';
+  log(`${colorName} stone #${stoneCount} placed at row=${row}, col=${col}${captureNote}`);
+
+  currentTurn = opponentColor;
+  updateTurnStatus();
 }
 
 // --- Tap-to-place: screen-space nearest dot (only active once calibrated) ---
