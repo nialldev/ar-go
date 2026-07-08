@@ -53,20 +53,35 @@
   <a-entity camera id="main-camera"></a-entity>
 </a-scene>
 
-<div id="controls" style="position:fixed; bottom:32vh; left:0; right:0; z-index:50; display:flex; justify-content:center; gap:10px; font-family:-apple-system, system-ui, sans-serif;">
-  <button id="smaller" style="font-size:20px; padding:10px 18px;">− Smaller</button>
-  <span id="spacing-label" style="background:rgba(0,0,0,0.75); color:white; padding:10px 14px; border-radius:6px;">2.3cm</span>
-  <button id="bigger" style="font-size:20px; padding:10px 18px;">+ Bigger</button>
+<div id="controls" style="position:fixed; bottom:32vh; left:0; right:0; z-index:50; display:flex; flex-direction:column; align-items:center; gap:8px; font-family:-apple-system, system-ui, sans-serif;">
+  <div style="display:flex; gap:10px;">
+    <button id="smaller" style="font-size:18px; padding:8px 14px;">− Scale</button>
+    <span id="spacing-label" style="background:rgba(0,0,0,0.75); color:white; padding:8px 12px; border-radius:6px;">2.3cm</span>
+    <button id="bigger" style="font-size:18px; padding:8px 14px;">+ Scale</button>
+  </div>
+  <div style="display:flex; gap:6px; align-items:center;">
+    <button id="left" style="font-size:18px; padding:8px 12px;">←</button>
+    <button id="up" style="font-size:18px; padding:8px 12px;">↑</button>
+    <button id="down" style="font-size:18px; padding:8px 12px;">↓</button>
+    <button id="right" style="font-size:18px; padding:8px 12px;">→</button>
+    <button id="rot-left" style="font-size:18px; padding:8px 12px;">⟲</button>
+    <button id="rot-right" style="font-size:18px; padding:8px 12px;">⟳</button>
+  </div>
+  <span id="offset-label" style="background:rgba(0,0,0,0.75); color:white; padding:6px 10px; border-radius:6px; font-size:11px;">offset: 0, 0 | rot: 0°</span>
 </div>
 
 <script>
   const GRID_SIZE = 19;
-  let SPACING = 0.023; // meters, adjustable live via the buttons below
+  let SPACING = 0.023;
+  let OFFSET_X = -0.073; // starting guess: half the 14.6cm marker, since marker origin is its CENTER not corner
+  let OFFSET_Z = -0.073;
+  let ROTATION = 0; // degrees, for fine-tuning if the marker was taped slightly rotated
   const boardRoot = document.getElementById('board-root');
   const marker = document.getElementById('marker');
   const statusEl = document.getElementById('status');
   const logEl = document.getElementById('log');
   const spacingLabel = document.getElementById('spacing-label');
+  const offsetLabel = document.getElementById('offset-label');
 
   let stoneCount = 0;
 
@@ -75,7 +90,7 @@
   }
 
   marker.addEventListener('markerFound', () => {
-    statusEl.textContent = 'Marker detected — grid should be locked to it. Use the +/- buttons to resize, tap a dot to test placement.';
+    statusEl.textContent = 'Marker detected. Use Scale to resize, arrows to nudge the grid onto the corner, rotate to align.';
     statusEl.classList.add('found');
   });
   marker.addEventListener('markerLost', () => {
@@ -83,8 +98,13 @@
     statusEl.classList.remove('found');
   });
 
+  function updateTransform() {
+    boardRoot.setAttribute('position', `${OFFSET_X} 0 ${OFFSET_Z}`);
+    boardRoot.setAttribute('rotation', `0 ${ROTATION} 0`);
+    offsetLabel.textContent = `offset: ${(OFFSET_X*100).toFixed(1)}, ${(OFFSET_Z*100).toFixed(1)}cm | rot: ${ROTATION}°`;
+  }
+
   function buildGrid() {
-    // Clear existing grid/stones and rebuild at the current SPACING
     while (boardRoot.firstChild) boardRoot.removeChild(boardRoot.firstChild);
     stoneCount = 0;
 
@@ -123,14 +143,16 @@
     boardRoot.appendChild(line);
   }
 
-  document.getElementById('bigger').addEventListener('click', () => {
-    SPACING *= 1.1;
-    buildGrid();
-  });
-  document.getElementById('smaller').addEventListener('click', () => {
-    SPACING *= 0.9;
-    buildGrid();
-  });
+  document.getElementById('bigger').addEventListener('click', () => { SPACING *= 1.1; buildGrid(); });
+  document.getElementById('smaller').addEventListener('click', () => { SPACING *= 0.9; buildGrid(); });
+
+  const NUDGE = 0.01; // 1cm per tap
+  document.getElementById('left').addEventListener('click', () => { OFFSET_X -= NUDGE; updateTransform(); });
+  document.getElementById('right').addEventListener('click', () => { OFFSET_X += NUDGE; updateTransform(); });
+  document.getElementById('up').addEventListener('click', () => { OFFSET_Z -= NUDGE; updateTransform(); });
+  document.getElementById('down').addEventListener('click', () => { OFFSET_Z += NUDGE; updateTransform(); });
+  document.getElementById('rot-left').addEventListener('click', () => { ROTATION -= 2; updateTransform(); });
+  document.getElementById('rot-right').addEventListener('click', () => { ROTATION += 2; updateTransform(); });
 
   function placeStoneAt(row, col) {
     stoneCount++;
@@ -143,7 +165,6 @@
     log(`Stone #${stoneCount} placed at row=${row}, col=${col}`);
   }
 
-  // Manual raycasting for tap detection — more reliable across devices than A-Frame's built-in cursor component
   function onTap(event) {
     const sceneEl = document.querySelector('a-scene');
     if (!sceneEl || !sceneEl.camera) {
@@ -181,6 +202,7 @@
   window.addEventListener('click', onTap);
 
   buildGrid();
+  updateTransform();
   window.addEventListener('error', (e) => log('ERROR: ' + e.message));
 </script>
 
