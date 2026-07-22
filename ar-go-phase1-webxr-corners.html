@@ -267,10 +267,28 @@ function finalizeCalibration() {
     cornerMarkers.forEach((m) => scene.remove(m));
     statusEl.classList.add('ready');
 
-    // A real board is flat — force all 4 corners to share the same height,
-    // so one imprecise tap can't tilt the whole grid near that corner.
-    const avgY = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4;
-    corners.forEach((c) => { c.y = avgY; });
+    // A real board is a perfect rectangle — reconstruct an ideal parallelogram
+    // from the 4 taps instead of trusting each one exactly. Any skew between
+    // opposite edges is treated as tap noise and averaged out.
+    const tl = corners[0], tr = corners[1], bl = corners[2], br = corners[3];
+
+    const widthVec = new THREE.Vector3()
+      .addVectors(new THREE.Vector3().subVectors(tr, tl), new THREE.Vector3().subVectors(br, bl))
+      .multiplyScalar(0.5);
+    const heightVec = new THREE.Vector3()
+      .addVectors(new THREE.Vector3().subVectors(bl, tl), new THREE.Vector3().subVectors(br, tr))
+      .multiplyScalar(0.5);
+    const center = new THREE.Vector3()
+      .add(tl).add(tr).add(bl).add(br)
+      .multiplyScalar(0.25);
+
+    const halfW = widthVec.clone().multiplyScalar(0.5);
+    const halfH = heightVec.clone().multiplyScalar(0.5);
+    corners[0] = center.clone().sub(halfW).sub(halfH); // TL
+    corners[1] = center.clone().add(halfW).sub(halfH); // TR
+    corners[2] = center.clone().sub(halfW).add(halfH); // BL
+    corners[3] = center.clone().add(halfW).add(halfH); // BR
+    log('Corners geometrically corrected to an ideal rectangle, averaging out tap noise');
 
     buildGrid();
     resetBoardState();
