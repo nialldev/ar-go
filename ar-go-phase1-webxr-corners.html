@@ -61,7 +61,7 @@
   <button id="adjust-corners-btn">Adjust Corners</button>
 </div>
 
-<div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
+<div id="adjust-ui" style="display:none; position:fixed; bottom:70px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
   <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
     <button class="corner-select adjust-btn" data-corner="0">TL</button>
     <button class="corner-select adjust-btn" data-corner="1">TR</button>
@@ -76,7 +76,7 @@
   </div>
   <div style="padding:4px 6px; margin-bottom:8px;">
     <label style="font-size:12px; color:#ccc;">Corner Height (selected corner)</label>
-    <input type="range" id="corner-height-slider" min="-0.02" max="0.02" step="0.0005" value="0" style="width:100%;">
+    <input type="range" id="corner-height-slider" min="-0.04" max="0.04" step="0.0005" value="0" style="width:100%;">
   </div>
   <div style="display:flex; justify-content:center;">
     <button id="adj-confirm" class="adjust-btn" style="background:#0a0; color:white;">Confirm & Build Grid</button>
@@ -420,37 +420,33 @@ function hideAdjustUI() {
   document.getElementById('adjust-ui').style.display = 'none';
   clearHeightGapIndicator();
 }
-let heightGapIndicator = null;
+const DEFAULT_MARKER_COLOR = 0x00ff88;
+
+function setMarkerColor(marker, color) {
+  if (!marker) return;
+  marker.traverse((obj) => { if (obj.material) obj.material.color.setHex(color); });
+}
 
 function updateHeightGapIndicator() {
-  if (heightGapIndicator) { scene.remove(heightGapIndicator); heightGapIndicator = null; }
+  // Reset every marker to its default color first
+  cornerMarkers.forEach((marker) => setMarkerColor(marker, DEFAULT_MARKER_COLOR));
+
   if (!adjusting || corners.length < 4) return;
 
   const otherIndices = [0, 1, 2, 3].filter((i) => i !== selectedCorner);
   const avgOtherY = otherIndices.reduce((sum, i) => sum + corners[i].y, 0) / otherIndices.length;
+  const absGap = Math.abs(corners[selectedCorner].y - avgOtherY);
 
-  const current = corners[selectedCorner];
-  const gap = current.y - avgOtherY;
+  if (absGap < 0.0005) return; // negligible — leave it at the default color
 
-  if (Math.abs(gap) < 0.0005) return; // negligible — close enough, don't clutter the view
-
-  const target = new THREE.Vector3(current.x, avgOtherY, current.z);
-  const mid = current.clone().add(target).multiplyScalar(0.5);
-
-  // Green when close, orange when moderate, red when way off — quick at-a-glance read
-  const absGap = Math.abs(gap);
-  const color = absGap > 0.015 ? 0xff2222 : absGap > 0.005 ? 0xffaa00 : 0x88ff00;
-
-  const geo = new THREE.BoxGeometry(0.004, 1, 0.004);
-  const mat = new THREE.MeshBasicMaterial({ color });
-  heightGapIndicator = new THREE.Mesh(geo, mat);
-  heightGapIndicator.position.copy(mid);
-  heightGapIndicator.scale.y = absGap;
-  scene.add(heightGapIndicator);
+  // Red when way off, orange when moderate, green-yellow when close — the whole
+  // marker changes color so it's obvious at a glance without hunting for a small bar
+  const color = absGap > 0.02 ? 0xff2222 : absGap > 0.007 ? 0xffaa00 : 0x88ff00;
+  setMarkerColor(cornerMarkers[selectedCorner], color);
 }
 
 function clearHeightGapIndicator() {
-  if (heightGapIndicator) { scene.remove(heightGapIndicator); heightGapIndicator = null; }
+  cornerMarkers.forEach((marker) => setMarkerColor(marker, DEFAULT_MARKER_COLOR));
 }
 
 function highlightSelectedCorner() {
@@ -473,10 +469,10 @@ document.querySelectorAll('.corner-select').forEach((btn) => {
 });
 
 // Nudge the selected corner along world X/Z (approximates the board's horizontal plane)
-document.getElementById('adj-left').addEventListener('click', () => { corners[selectedCorner].x -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); });
-document.getElementById('adj-right').addEventListener('click', () => { corners[selectedCorner].x += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); });
-document.getElementById('adj-up').addEventListener('click', () => { corners[selectedCorner].z -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); });
-document.getElementById('adj-down').addEventListener('click', () => { corners[selectedCorner].z += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); });
+document.getElementById('adj-left').addEventListener('click', () => { corners[selectedCorner].x -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); if (gridBuilt) reapplyGridHeight(); });
+document.getElementById('adj-right').addEventListener('click', () => { corners[selectedCorner].x += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); if (gridBuilt) reapplyGridHeight(); });
+document.getElementById('adj-up').addEventListener('click', () => { corners[selectedCorner].z -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); if (gridBuilt) reapplyGridHeight(); });
+document.getElementById('adj-down').addEventListener('click', () => { corners[selectedCorner].z += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); if (gridBuilt) reapplyGridHeight(); });
 let cornerHeightSliderBase = 0;
 const cornerHeightSlider = document.getElementById('corner-height-slider');
 cornerHeightSlider.addEventListener('input', (e) => {
@@ -486,6 +482,7 @@ cornerHeightSlider.addEventListener('input', (e) => {
   cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]);
   cornerHeightSliderBase = newVal;
   updateHeightGapIndicator();
+  if (gridBuilt) reapplyGridHeight();
 });
 
 document.getElementById('adj-confirm').addEventListener('click', () => {
