@@ -70,6 +70,8 @@
     <button id="adj-up" class="adjust-btn">↑</button>
     <button id="adj-down" class="adjust-btn">↓</button>
     <button id="adj-right" class="adjust-btn">→</button>
+    <button id="adj-height-up" class="adjust-btn">Height+</button>
+    <button id="adj-height-down" class="adjust-btn">Height−</button>
   </div>
   <div style="display:flex; justify-content:center;">
     <button id="adj-confirm" class="adjust-btn" style="background:#0a0; color:white;">Confirm & Build Grid</button>
@@ -377,6 +379,8 @@ document.getElementById('adj-left').addEventListener('click', () => { corners[se
 document.getElementById('adj-right').addEventListener('click', () => { corners[selectedCorner].x += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
 document.getElementById('adj-up').addEventListener('click', () => { corners[selectedCorner].z -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
 document.getElementById('adj-down').addEventListener('click', () => { corners[selectedCorner].z += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
+document.getElementById('adj-height-up').addEventListener('click', () => { corners[selectedCorner].y += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
+document.getElementById('adj-height-down').addEventListener('click', () => { corners[selectedCorner].y -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
 
 document.getElementById('adj-confirm').addEventListener('click', finalizeCalibration);
 
