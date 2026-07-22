@@ -54,8 +54,10 @@
   <button id="recalibrate">Recalibrate</button>
   <button id="finalize-btn" style="display:none;">Finalize Score</button>
   <button id="restore-btn" style="display:none;">Restore Previous Game</button>
-  <button id="grid-up-btn">Grid Height ↑</button>
-  <button id="grid-down-btn">Grid Height ↓</button>
+  <div style="padding:4px 6px;">
+    <label style="font-size:12px; color:#ccc;">Grid Height</label>
+    <input type="range" id="grid-height-slider" min="-0.05" max="0.05" step="0.001" value="0" style="width:100%;">
+  </div>
   <button id="adjust-corners-btn">Adjust Corners</button>
 </div>
 
@@ -71,8 +73,10 @@
     <button id="adj-up" class="adjust-btn">↑</button>
     <button id="adj-down" class="adjust-btn">↓</button>
     <button id="adj-right" class="adjust-btn">→</button>
-    <button id="adj-height-up" class="adjust-btn">Height+</button>
-    <button id="adj-height-down" class="adjust-btn">Height−</button>
+  </div>
+  <div style="padding:4px 6px; margin-bottom:8px;">
+    <label style="font-size:12px; color:#ccc;">Corner Height (selected corner)</label>
+    <input type="range" id="corner-height-slider" min="-0.02" max="0.02" step="0.0005" value="0" style="width:100%;">
   </div>
   <div style="display:flex; justify-content:center;">
     <button id="adj-confirm" class="adjust-btn" style="background:#0a0; color:white;">Confirm & Build Grid</button>
@@ -381,14 +385,18 @@ function doRestoreGame() {
 }
 
 document.getElementById('restore-btn').addEventListener('click', doRestoreGame);
-document.getElementById('grid-up-btn').addEventListener('click', nudgeGridHeightUp);
-document.getElementById('grid-down-btn').addEventListener('click', nudgeGridHeightDown);
+document.getElementById('grid-height-slider').addEventListener('input', (e) => {
+  if (!gridBuilt) return;
+  manualHeightAdjust = parseFloat(e.target.value);
+  reapplyGridHeight();
+});
 
 function resetCalibration() {
   corners = [];
   calibrated = false;
   adjusting = false;
   manualHeightAdjust = 0;
+  document.getElementById('grid-height-slider').value = 0;
   cornerMarkers.forEach((m) => scene.remove(m));
   cornerMarkers.length = 0;
   hideAdjustUI();
@@ -404,10 +412,47 @@ document.getElementById('recalibrate').addEventListener('click', resetCalibratio
 function showAdjustUI() {
   document.getElementById('adjust-ui').style.display = 'block';
   highlightSelectedCorner();
+  document.getElementById('corner-height-slider').value = 0;
+  cornerHeightSliderBase = 0;
+  updateHeightGapIndicator();
 }
 function hideAdjustUI() {
   document.getElementById('adjust-ui').style.display = 'none';
+  clearHeightGapIndicator();
 }
+let heightGapIndicator = null;
+
+function updateHeightGapIndicator() {
+  if (heightGapIndicator) { scene.remove(heightGapIndicator); heightGapIndicator = null; }
+  if (!adjusting || corners.length < 4) return;
+
+  const otherIndices = [0, 1, 2, 3].filter((i) => i !== selectedCorner);
+  const avgOtherY = otherIndices.reduce((sum, i) => sum + corners[i].y, 0) / otherIndices.length;
+
+  const current = corners[selectedCorner];
+  const gap = current.y - avgOtherY;
+
+  if (Math.abs(gap) < 0.0005) return; // negligible — close enough, don't clutter the view
+
+  const target = new THREE.Vector3(current.x, avgOtherY, current.z);
+  const mid = current.clone().add(target).multiplyScalar(0.5);
+
+  // Green when close, orange when moderate, red when way off — quick at-a-glance read
+  const absGap = Math.abs(gap);
+  const color = absGap > 0.015 ? 0xff2222 : absGap > 0.005 ? 0xffaa00 : 0x88ff00;
+
+  const geo = new THREE.BoxGeometry(0.004, 1, 0.004);
+  const mat = new THREE.MeshBasicMaterial({ color });
+  heightGapIndicator = new THREE.Mesh(geo, mat);
+  heightGapIndicator.position.copy(mid);
+  heightGapIndicator.scale.y = absGap;
+  scene.add(heightGapIndicator);
+}
+
+function clearHeightGapIndicator() {
+  if (heightGapIndicator) { scene.remove(heightGapIndicator); heightGapIndicator = null; }
+}
+
 function highlightSelectedCorner() {
   document.querySelectorAll('.corner-select').forEach((btn) => {
     btn.style.background = (parseInt(btn.dataset.corner) === selectedCorner) ? '#0a0' : '';
@@ -421,16 +466,27 @@ document.querySelectorAll('.corner-select').forEach((btn) => {
     selectedCorner = parseInt(btn.dataset.corner);
     highlightSelectedCorner();
     updateAdjustStatus();
+    cornerHeightSlider.value = 0;
+    cornerHeightSliderBase = 0;
+    updateHeightGapIndicator();
   });
 });
 
 // Nudge the selected corner along world X/Z (approximates the board's horizontal plane)
-document.getElementById('adj-left').addEventListener('click', () => { corners[selectedCorner].x -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
-document.getElementById('adj-right').addEventListener('click', () => { corners[selectedCorner].x += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
-document.getElementById('adj-up').addEventListener('click', () => { corners[selectedCorner].z -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
-document.getElementById('adj-down').addEventListener('click', () => { corners[selectedCorner].z += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
-document.getElementById('adj-height-up').addEventListener('click', () => { corners[selectedCorner].y += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
-document.getElementById('adj-height-down').addEventListener('click', () => { corners[selectedCorner].y -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
+document.getElementById('adj-left').addEventListener('click', () => { corners[selectedCorner].x -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); });
+document.getElementById('adj-right').addEventListener('click', () => { corners[selectedCorner].x += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); });
+document.getElementById('adj-up').addEventListener('click', () => { corners[selectedCorner].z -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); });
+document.getElementById('adj-down').addEventListener('click', () => { corners[selectedCorner].z += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); });
+let cornerHeightSliderBase = 0;
+const cornerHeightSlider = document.getElementById('corner-height-slider');
+cornerHeightSlider.addEventListener('input', (e) => {
+  const newVal = parseFloat(e.target.value);
+  const delta = newVal - cornerHeightSliderBase;
+  corners[selectedCorner].y += delta;
+  cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]);
+  cornerHeightSliderBase = newVal;
+  updateHeightGapIndicator();
+});
 
 document.getElementById('adj-confirm').addEventListener('click', () => {
   if (isReAdjusting) finalizeAdjustment();
@@ -915,8 +971,7 @@ menuToggle.addEventListener('click', () => {
   menuPanel.style.display = menuPanel.style.display === 'flex' ? 'none' : 'flex';
 });
 menuPanel.addEventListener('click', (e) => {
-  const isHeightButton = e.target.id === 'grid-up-btn' || e.target.id === 'grid-down-btn';
-  if (e.target.tagName === 'BUTTON' && !isHeightButton) menuPanel.style.display = 'none'; // auto-close after most actions
+  if (e.target.tagName === 'BUTTON') menuPanel.style.display = 'none'; // auto-close after button actions; sliders don't trigger this
 });
 
 document.getElementById('pass-btn').addEventListener('click', doPass);
