@@ -15,7 +15,6 @@
     display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 65;
     background: rgba(0,0,0,0.85); color: #0f8; padding: 10px 14px;
     font-family: monospace; font-size: 12px; max-height: 30vh; overflow-y: auto; white-space: pre-wrap;
-    pointer-events: none;
   }
   #log.visible { display: block; }
   #not-supported {
@@ -52,6 +51,7 @@
 <div id="not-supported" style="display:none;"></div>
 
 <button id="menu-toggle">☰</button>
+<button id="confirm-move-btn" style="display:none; position:fixed; bottom:80px; left:50%; transform:translateX(-50%); z-index:70; font-size:16px; padding:14px 24px; background:#0a0; color:white; border:none; border-radius:10px;">Confirm My Move</button>
 <div id="menu-panel">
   <button id="pass-btn">Pass</button>
   <button id="resign-btn">Resign</button>
@@ -153,7 +153,7 @@ function init() {
       } else {
         document.body.appendChild(ARButton.createButton(renderer, {
           requiredFeatures: ['hit-test'],
-          optionalFeatures: ['dom-overlay', 'anchors'],
+          optionalFeatures: ['dom-overlay', 'anchors', 'camera-access'],
           domOverlay: { root: document.body }
         }));
       }
@@ -351,6 +351,9 @@ function finalizeCalibration() {
       document.getElementById('restore-btn').style.display = 'block';
       log('A previous game was found — tap Restore Previous Game in the menu to bring it back, or just start playing for a new game');
     }
+
+    pendingBaselineCapture = true;
+    updateConfirmButtonVisibility();
   } catch (err) {
     log('ERROR in finalizeCalibration/buildGrid: ' + err.message);
     console.error(err);
@@ -394,6 +397,7 @@ function finalizeAdjustment() {
     buildGrid(); // rebuilds dots/lines fresh from the adjusted corners
     rebuildStonesFromBoardState(); // reposition any existing stones to match
     updateTurnStatus();
+    pendingBaselineCapture = true; // intersection positions changed, need a fresh camera baseline
     log('Calibration adjusted — grid and stones repositioned, game state kept');
   } catch (err) {
     log('ERROR in finalizeAdjustment: ' + err.message);
@@ -483,6 +487,10 @@ function resetCalibration() {
   reticle.visible = false;
   statusEl.classList.remove('ready');
   statusEl.textContent = 'Recalibrating — tap the board\'s top-left corner.';
+  boardSnapshot = {};
+  pendingBaselineCapture = false;
+  pendingConfirmCapture = false;
+  updateConfirmButtonVisibility();
   log('Recalibration started');
 }
 
@@ -879,6 +887,8 @@ function doClearStones() {
   clearSavedGameState();
   pendingRestoreData = null;
   document.getElementById('restore-btn').style.display = 'none';
+  pendingBaselineCapture = true; // board is empty again, need a fresh baseline
+  updateConfirmButtonVisibility();
   log('Stones cleared — calibration kept, ready for a new test game');
 }
 
@@ -951,6 +961,7 @@ function enterDeadStoneMarking() {
   statusEl.textContent = 'Both players passed. Tap any stone to mark it dead (X), then hit Finalize Score.';
   log('Entered dead-stone marking phase — tap stones to toggle dead, then Finalize Score');
   updateTerritoryPreview();
+  updateConfirmButtonVisibility();
 }
 
 function doResign() {
@@ -962,6 +973,7 @@ function doResign() {
   statusEl.textContent = `${resigningName} resigned. ${winnerName} wins!`;
   log(`${resigningName} resigned — ${winnerName} wins`);
   saveGameState();
+  updateConfirmButtonVisibility();
 }
 
 // Area (Chinese-style) scoring: stones on board + surrounded empty territory
@@ -1067,6 +1079,7 @@ function endGame(reason) {
 
   statusEl.textContent = summary;
   log(summary);
+  updateConfirmButtonVisibility();
 }
 
 const menuToggle = document.getElementById('menu-toggle');
@@ -1199,6 +1212,7 @@ function placeStoneAt(row, col) {
   currentTurn = opponentColor;
   updateTurnStatus();
   saveGameState();
+  pendingBaselineCapture = true; // keep the camera baseline fresh after any placement
   if (pendingRestoreData) {
     pendingRestoreData = null;
     document.getElementById('restore-btn').style.display = 'none';
@@ -1301,7 +1315,7 @@ document.getElementById('finalize-btn').addEventListener('click', finalizeScoreW
 
 function onTouchTap(event) {
   if (!gridBuilt) return; // calibration taps are handled via WebXR 'select' instead
-  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('.adjust-btn'))) return;
+  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('.adjust-btn') || event.target.closest('#log'))) return;
 
   const now = Date.now();
   if (now - lastTapTime < 400) return;
@@ -1352,6 +1366,95 @@ window.addEventListener('touchend', onTouchTap, { passive: false });
 window.addEventListener('click', onTouchTap);
 
 // --- Render loop with hit-test for calibration reticle ---
+// --- Auto-detect physical stone placement via raw camera pixel access ---
+// EXPERIMENTAL: this uses a very new, sparsely-documented WebXR feature.
+// Falls back gracefully to manual tap-to-place if unsupported or unreliable.
+let cameraGlBinding = null;
+let cameraBindingChecked = false;
+let sampleFramebuffer = null;
+let boardSnapshot = {}; // 'row,col' -> brightness (0-255), for currently-empty intersections
+let pendingBaselineCapture = false;
+let pendingConfirmCapture = false;
+const BRIGHTNESS_CHANGE_THRESHOLD = 25; // minimum change to count as "something appeared here"
+
+function ensureCameraBinding(session) {
+  if (cameraBindingChecked) return;
+  cameraBindingChecked = true;
+  try {
+    const gl = renderer.getContext();
+    if (typeof XRWebGLBinding === 'undefined') {
+      log('Camera auto-detect: XRWebGLBinding not available in this browser');
+      return;
+    }
+    cameraGlBinding = new XRWebGLBinding(session, gl);
+    log('Camera auto-detect: binding created successfully');
+  } catch (err) {
+    log('Camera auto-detect: setup failed (' + err.message + ') — use manual tap-to-place instead');
+  }
+}
+
+function sampleIntersectionBrightness(gl, texture, texWidth, texHeight, worldPos) {
+  const ndc = worldPos.clone().project(camera);
+  if (ndc.z > 1) return null; // behind camera
+  const texX = Math.round((ndc.x * 0.5 + 0.5) * texWidth);
+  const texY = Math.round((ndc.y * 0.5 + 0.5) * texHeight); // WebGL texture/readPixels origin is bottom-left
+  if (texX < 0 || texX >= texWidth || texY < 0 || texY >= texHeight) return null;
+
+  if (!sampleFramebuffer) sampleFramebuffer = gl.createFramebuffer();
+  const prevFB = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sampleFramebuffer);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  const pixel = new Uint8Array(4);
+  gl.readPixels(texX, texY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, prevFB); // restore, so Three.js's own render call right after isn't broken
+
+  return (pixel[0] + pixel[1] + pixel[2]) / 3;
+}
+
+function captureEmptyIntersectionSnapshot(frame, referenceSpace) {
+  if (!cameraGlBinding) return null;
+  const pose = frame.getViewerPose(referenceSpace);
+  if (!pose || pose.views.length === 0) return null;
+  const view = pose.views[0];
+  let texture, texWidth, texHeight;
+  try {
+    texture = cameraGlBinding.getCameraImage(view);
+    texWidth = view.camera ? view.camera.width : null;
+    texHeight = view.camera ? view.camera.height : null;
+  } catch (err) {
+    log('Camera auto-detect: could not get camera image (' + err.message + ')');
+    return null;
+  }
+  if (!texture || !texWidth || !texHeight) return null;
+
+  const gl = renderer.getContext();
+  const snapshot = {};
+  const pos = new THREE.Vector3();
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (boardState[r][c] !== EMPTY) continue; // only track currently-empty points
+      gridPosition(r, c, pos);
+      const brightness = sampleIntersectionBrightness(gl, texture, texWidth, texHeight, pos);
+      if (brightness !== null) snapshot[r + ',' + c] = brightness;
+    }
+  }
+  return snapshot;
+}
+
+document.getElementById('confirm-move-btn').addEventListener('click', () => {
+  if (!cameraGlBinding) {
+    log('Camera auto-detect not available — tap the correct dot on screen manually instead');
+    return;
+  }
+  log('Capturing camera image to detect your placed stone...');
+  pendingConfirmCapture = true;
+});
+
+function updateConfirmButtonVisibility() {
+  const btn = document.getElementById('confirm-move-btn');
+  btn.style.display = (gridBuilt && !gameOver && !markingDeadStones) ? 'block' : 'none';
+}
+
 let renderErrorLogged = false;
 function render(timestamp, frame) {
   try {
@@ -1406,6 +1509,49 @@ function render(timestamp, frame) {
         }
       }
       if (gridBuilt && anyCornerUpdated) reapplyGridHeight();
+
+      // Camera auto-detect: binding setup and any pending capture, done here
+      // since XRFrame is only valid inside this callback
+      if (gridBuilt) {
+        ensureCameraBinding(session);
+
+        if (pendingBaselineCapture) {
+          const snap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
+          if (snap) {
+            boardSnapshot = snap;
+            log('Camera auto-detect: baseline captured (' + Object.keys(snap).length + ' points)');
+          } else {
+            log('Camera auto-detect: baseline capture failed — manual tap-to-place still works');
+          }
+          pendingBaselineCapture = false;
+        }
+
+        if (pendingConfirmCapture) {
+          pendingConfirmCapture = false;
+          const afterSnap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
+          if (!afterSnap) {
+            log('Camera auto-detect: capture failed — tap the correct dot manually instead');
+          } else {
+            let bestKey = null, bestDelta = 0;
+            Object.keys(boardSnapshot).forEach((key) => {
+              if (afterSnap[key] === undefined) return; // no longer empty or out of view
+              const delta = Math.abs(boardSnapshot[key] - afterSnap[key]);
+              if (delta > bestDelta) { bestDelta = delta; bestKey = key; }
+            });
+
+            if (bestKey && bestDelta >= BRIGHTNESS_CHANGE_THRESHOLD) {
+              const [r, c] = bestKey.split(',').map(Number);
+              log(`Camera auto-detect: found a change at (${r},${c}), brightness delta ${bestDelta.toFixed(0)}`);
+              placeStoneAt(r, c);
+              // Re-baseline against the new board state for next time
+              const freshSnap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
+              if (freshSnap) boardSnapshot = freshSnap;
+            } else {
+              log(`Camera auto-detect: no clear change found (best delta ${bestDelta.toFixed(0)}, needed ${BRIGHTNESS_CHANGE_THRESHOLD}) — tap the correct dot manually instead`);
+            }
+          }
+        }
+      }
     }
 
     renderer.render(scene, camera);
