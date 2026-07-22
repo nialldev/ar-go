@@ -54,10 +54,6 @@
   <button id="recalibrate">Recalibrate</button>
   <button id="finalize-btn" style="display:none;">Finalize Score</button>
   <button id="restore-btn" style="display:none;">Restore Previous Game</button>
-  <div style="padding:4px 6px;">
-    <label style="font-size:12px; color:#ccc;">Grid Height</label>
-    <input type="range" id="grid-height-slider" min="-0.05" max="0.05" step="0.001" value="0" style="width:100%;">
-  </div>
   <button id="adjust-corners-btn">Adjust Corners</button>
 </div>
 
@@ -68,18 +64,25 @@
     <button class="corner-select adjust-btn" data-corner="2">BL</button>
     <button class="corner-select adjust-btn" data-corner="3">BR</button>
   </div>
-  <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
-    <button id="adj-left" class="adjust-btn">←</button>
-    <button id="adj-up" class="adjust-btn">↑</button>
-    <button id="adj-down" class="adjust-btn">↓</button>
-    <button id="adj-right" class="adjust-btn">→</button>
+  <div style="padding:4px 6px; margin-bottom:8px;">
+    <label style="font-size:12px; color:#ccc;">Left ↔ Right (selected corner)</label>
+    <input type="range" id="adj-x-slider" min="-0.03" max="0.03" step="0.0005" value="0" style="width:100%;">
   </div>
   <div style="padding:4px 6px; margin-bottom:8px;">
-    <label style="font-size:12px; color:#ccc;">Corner Height (selected corner)</label>
+    <label style="font-size:12px; color:#ccc;">Forward ↔ Back (selected corner)</label>
+    <input type="range" id="adj-z-slider" min="-0.03" max="0.03" step="0.0005" value="0" style="width:100%;">
+  </div>
+  <div style="padding:4px 6px; margin-bottom:8px;">
+    <label style="font-size:12px; color:#ccc;">Bulk Height (all 4 corners together — fix overall level first)</label>
+    <input type="range" id="bulk-height-slider" min="-0.06" max="0.06" step="0.001" value="0" style="width:100%;">
+  </div>
+  <div style="padding:4px 6px; margin-bottom:8px;">
+    <label style="font-size:12px; color:#ccc;">Corner Height (selected corner only — for fine residual tweaks)</label>
     <input type="range" id="corner-height-slider" min="-0.04" max="0.04" step="0.0005" value="0" style="width:100%;">
   </div>
-  <div style="display:flex; justify-content:center;">
+  <div style="display:flex; justify-content:center; gap:8px;">
     <button id="adj-confirm" class="adjust-btn" style="background:#0a0; color:white;">Confirm & Build Grid</button>
+    <button id="adj-cancel" class="adjust-btn" style="background:#a00; color:white;">Cancel</button>
   </div>
 </div>
 
@@ -95,11 +98,10 @@ let hitTestSourceRequested = false;
 
 const cornerNames = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 let corners = []; // THREE.Vector3[]
+let cornersBackup = []; // snapshot taken when entering fine-tune mode, for Cancel
 let calibrated = false;
 let adjusting = false;
 let selectedCorner = 0;
-const HEIGHT_OFFSET = 0.002; // reduced — even a small offset causes a big apparent shift at close/angled views
-const NUDGE_STEP = 0.003; // 3mm per arrow press
 
 const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
@@ -254,9 +256,9 @@ function onSelect() {
       adjusting = true;
       selectedCorner = 0;
       reticle.visible = false;
+      cornersBackup = corners.map((c) => c.clone());
       showAdjustUI();
       updateAdjustStatus();
-      log('showAdjustUI() called — adjust-ui display is now: ' + document.getElementById('adjust-ui').style.display);
     }
     return;
   }
@@ -326,6 +328,7 @@ function startAdjustCorners() {
   isReAdjusting = true;
   adjusting = true;
   selectedCorner = 0;
+  cornersBackup = corners.map((c) => c.clone());
 
   cornerMarkers.length = 0;
   corners.forEach((pos) => {
@@ -360,7 +363,39 @@ function finalizeAdjustment() {
   }
 }
 
+function cancelAdjustment() {
+  if (cornersBackup.length !== 4) { log('Nothing to cancel back to'); return; }
+
+  corners = cornersBackup.map((c) => c.clone());
+  corners.forEach((c, i) => { if (cornerMarkers[i]) cornerMarkers[i].position.copy(c); });
+  if (gridBuilt) reapplyGridHeight();
+
+  document.getElementById('bulk-height-slider').value = 0;
+  bulkHeightSliderBase = 0;
+  document.getElementById('corner-height-slider').value = 0;
+  cornerHeightSliderBase = 0;
+  document.getElementById('adj-x-slider').value = 0;
+  xSliderBase = 0;
+  document.getElementById('adj-z-slider').value = 0;
+  zSliderBase = 0;
+  updateHeightGapIndicator();
+
+  if (isReAdjusting) {
+    // Re-adjustment: fully exit back to the game exactly as it was before
+    isReAdjusting = false;
+    adjusting = false;
+    hideAdjustUI();
+    cornerMarkers.forEach((m) => scene.remove(m));
+    cornerMarkers.length = 0;
+    log('Adjustment cancelled — reverted to your previous calibration');
+  } else {
+    // First-time calibration: just revert the values, stay in fine-tune mode
+    log('Reverted to the positions right after your 4 taps');
+  }
+}
+
 document.getElementById('adjust-corners-btn').addEventListener('click', startAdjustCorners);
+document.getElementById('adj-cancel').addEventListener('click', cancelAdjustment);
 
 let pendingRestoreData = null;
 
@@ -385,18 +420,11 @@ function doRestoreGame() {
 }
 
 document.getElementById('restore-btn').addEventListener('click', doRestoreGame);
-document.getElementById('grid-height-slider').addEventListener('input', (e) => {
-  if (!gridBuilt) return;
-  manualHeightAdjust = parseFloat(e.target.value);
-  reapplyGridHeight();
-});
 
 function resetCalibration() {
   corners = [];
   calibrated = false;
   adjusting = false;
-  manualHeightAdjust = 0;
-  document.getElementById('grid-height-slider').value = 0;
   cornerMarkers.forEach((m) => scene.remove(m));
   cornerMarkers.length = 0;
   hideAdjustUI();
@@ -414,6 +442,12 @@ function showAdjustUI() {
   highlightSelectedCorner();
   document.getElementById('corner-height-slider').value = 0;
   cornerHeightSliderBase = 0;
+  document.getElementById('bulk-height-slider').value = 0;
+  bulkHeightSliderBase = 0;
+  document.getElementById('adj-x-slider').value = 0;
+  xSliderBase = 0;
+  document.getElementById('adj-z-slider').value = 0;
+  zSliderBase = 0;
   updateHeightGapIndicator();
 }
 function hideAdjustUI() {
@@ -464,15 +498,52 @@ document.querySelectorAll('.corner-select').forEach((btn) => {
     updateAdjustStatus();
     cornerHeightSlider.value = 0;
     cornerHeightSliderBase = 0;
+    xSlider.value = 0;
+    xSliderBase = 0;
+    zSlider.value = 0;
+    zSliderBase = 0;
     updateHeightGapIndicator();
   });
 });
 
 // Nudge the selected corner along world X/Z (approximates the board's horizontal plane)
-document.getElementById('adj-left').addEventListener('click', () => { corners[selectedCorner].x -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); if (gridBuilt) reapplyGridHeight(); });
-document.getElementById('adj-right').addEventListener('click', () => { corners[selectedCorner].x += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); if (gridBuilt) reapplyGridHeight(); });
-document.getElementById('adj-up').addEventListener('click', () => { corners[selectedCorner].z -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); if (gridBuilt) reapplyGridHeight(); });
-document.getElementById('adj-down').addEventListener('click', () => { corners[selectedCorner].z += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); updateHeightGapIndicator(); if (gridBuilt) reapplyGridHeight(); });
+let xSliderBase = 0;
+const xSlider = document.getElementById('adj-x-slider');
+xSlider.addEventListener('input', (e) => {
+  const newVal = parseFloat(e.target.value);
+  const delta = newVal - xSliderBase;
+  corners[selectedCorner].x += delta;
+  cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]);
+  xSliderBase = newVal;
+  updateHeightGapIndicator();
+  if (gridBuilt) reapplyGridHeight();
+});
+
+let zSliderBase = 0;
+const zSlider = document.getElementById('adj-z-slider');
+zSlider.addEventListener('input', (e) => {
+  const newVal = parseFloat(e.target.value);
+  const delta = newVal - zSliderBase;
+  corners[selectedCorner].z += delta;
+  cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]);
+  zSliderBase = newVal;
+  updateHeightGapIndicator();
+  if (gridBuilt) reapplyGridHeight();
+});
+let bulkHeightSliderBase = 0;
+const bulkHeightSlider = document.getElementById('bulk-height-slider');
+bulkHeightSlider.addEventListener('input', (e) => {
+  const newVal = parseFloat(e.target.value);
+  const delta = newVal - bulkHeightSliderBase;
+  corners.forEach((c, i) => {
+    c.y += delta;
+    if (cornerMarkers[i]) cornerMarkers[i].position.copy(c);
+  });
+  bulkHeightSliderBase = newVal;
+  updateHeightGapIndicator();
+  if (gridBuilt) reapplyGridHeight();
+});
+
 let cornerHeightSliderBase = 0;
 const cornerHeightSlider = document.getElementById('corner-height-slider');
 cornerHeightSlider.addEventListener('input', (e) => {
@@ -497,8 +568,6 @@ const stoneAssets = {};
 let stoneCount = 0;
 let gridBuilt = false;
 
-let manualHeightAdjust = 0; // adjustable live via the Grid Up/Down menu buttons
-
 function gridPosition(row, col, target) {
   const u = col / (GRID_SIZE - 1);
   const v = row / (GRID_SIZE - 1);
@@ -507,13 +576,10 @@ function gridPosition(row, col, target) {
   target.x = tl.x * (1 - u) * (1 - v) + tr.x * u * (1 - v) + bl.x * (1 - u) * v + br.x * u * v;
   target.y = tl.y * (1 - u) * (1 - v) + tr.y * u * (1 - v) + bl.y * (1 - u) * v + br.y * u * v;
   target.z = tl.z * (1 - u) * (1 - v) + tr.z * u * (1 - v) + bl.z * (1 - u) * v + br.z * u * v;
-  target.y += HEIGHT_OFFSET + manualHeightAdjust;
   return target;
 }
 
 const LINE_THICKNESS = 0.002;
-
-const HEIGHT_STEP = 0.002;
 
 function reapplyGridHeight() {
   const tmp = new THREE.Vector3();
@@ -543,20 +609,6 @@ function reapplyGridHeight() {
     s.ringMesh.position.copy(tmp);
     s.ringMesh.position.y += 0.001;
   });
-
-  log(`Grid height adjusted (manual offset: ${(manualHeightAdjust * 1000).toFixed(0)}mm)`);
-}
-
-function nudgeGridHeightUp() {
-  if (!gridBuilt) { log('Calibrate first'); return; }
-  manualHeightAdjust += HEIGHT_STEP;
-  reapplyGridHeight();
-}
-
-function nudgeGridHeightDown() {
-  if (!gridBuilt) { log('Calibrate first'); return; }
-  manualHeightAdjust -= HEIGHT_STEP;
-  reapplyGridHeight();
 }
 function positionLineMesh(mesh, a, b) {
   const mid = a.clone().add(b).multiplyScalar(0.5);
