@@ -38,6 +38,7 @@
 <button id="resign-btn" class="control" style="top:96px; left:10px;">Resign</button>
 <button id="clear-stones-btn" class="control" style="top:96px; right:10px;">Clear Stones</button>
 <button id="undo-btn" class="control" style="top:138px; right:10px;">Undo</button>
+<button id="finalize-btn" class="control" style="display:none; top:222px; right:10px; background:#0a0; color:white;">Finalize Score</button>
 <div id="captures" style="position:fixed; top:180px; left:0; right:0; z-index:55; text-align:center; color:white; font-family:-apple-system, system-ui, sans-serif; font-size:13px; background:rgba(0,0,0,0.6); padding:4px;">Captures — Black: 0 &nbsp; White: 0</div>
 
 <div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
@@ -173,6 +174,19 @@ function onWindowResize() {
 
 // --- Corner calibration via hit-test taps ---
 const cornerMarkers = []; // THREE.Mesh[] — one per tapped corner, kept so we can move them during adjustment
+
+function createXMarker(color) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color });
+  const barGeo = new THREE.BoxGeometry(0.018, 0.001, 0.003);
+  const bar1 = new THREE.Mesh(barGeo, mat);
+  bar1.rotation.y = Math.PI / 4;
+  group.add(bar1);
+  const bar2 = new THREE.Mesh(barGeo, mat);
+  bar2.rotation.y = -Math.PI / 4;
+  group.add(bar2);
+  return group;
+}
 
 function createRingCrosshairMarker(color) {
   const group = new THREE.Group();
@@ -388,6 +402,8 @@ let passCount = 0;
 let gameOver = false;
 let blackCaptures = 0; // stones Black has captured (i.e. White stones removed)
 let whiteCaptures = 0; // stones White has captured
+let markingDeadStones = false;
+const deadMarkers = new Map(); // 'row,col' -> X marker mesh (Group)
 
 function resetBoardState() {
   boardState = [];
@@ -399,6 +415,10 @@ function resetBoardState() {
   blackCaptures = 0;
   whiteCaptures = 0;
   updateCapturesUI();
+  markingDeadStones = false;
+  deadMarkers.forEach((xMesh) => scene.remove(xMesh));
+  deadMarkers.clear();
+  document.getElementById('finalize-btn').style.display = 'none';
 }
 
 function updateCapturesUI() {
@@ -451,6 +471,13 @@ function doUndo() {
   if (moveHistory.length === 0) {
     log('Nothing to undo');
     return;
+  }
+  if (markingDeadStones) {
+    markingDeadStones = false;
+    deadMarkers.forEach((xMesh) => scene.remove(xMesh));
+    deadMarkers.clear();
+    document.getElementById('finalize-btn').style.display = 'none';
+    log('Cancelled dead-stone marking to undo');
   }
   const snap = moveHistory.pop();
   boardState = snap.board.map((row) => row.slice());
@@ -523,22 +550,29 @@ function updateTurnStatus() {
 
 // --- Pass / Resign / Scoring ---
 function doPass() {
-  if (gameOver) { log('Game is already over'); return; }
+  if (gameOver || markingDeadStones) { log('Not available right now'); return; }
   moveHistory.push(snapshotState());
   const turnName = currentTurn === BLACK ? 'Black' : 'White';
   log(`${turnName} passes`);
   passCount++;
   koPoint = null; // any non-recapture action clears the ko restriction
   if (passCount >= 2) {
-    endGame('two passes in a row');
+    enterDeadStoneMarking();
     return;
   }
   currentTurn = currentTurn === BLACK ? WHITE : BLACK;
   updateTurnStatus();
 }
 
+function enterDeadStoneMarking() {
+  markingDeadStones = true;
+  document.getElementById('finalize-btn').style.display = 'block';
+  statusEl.textContent = 'Both players passed. Tap any stone to mark it dead (X), then hit Finalize Score.';
+  log('Entered dead-stone marking phase — tap stones to toggle dead, then Finalize Score');
+}
+
 function doResign() {
-  if (gameOver) { log('Game is already over'); return; }
+  if (gameOver || markingDeadStones) { log('Not available right now'); return; }
   moveHistory.push(snapshotState());
   const resigningName = currentTurn === BLACK ? 'Black' : 'White';
   const winnerName = currentTurn === BLACK ? 'White' : 'Black';
@@ -739,6 +773,98 @@ function placeStoneAt(row, col) {
 
 // --- Tap-to-place: screen-space nearest dot (only active once calibrated) ---
 let lastTapTime = 0;
+function handleDeadStoneTap(tapX, tapY) {
+  const projected2D = [];
+  placedStones.forEach((s) => {
+    const p = s.stoneMesh.position.clone().project(camera);
+    if (p.z > 1) return;
+    const screenX = (p.x * 0.5 + 0.5) * window.innerWidth;
+    const screenY = (-p.y * 0.5 + 0.5) * window.innerHeight;
+    projected2D.push({ stone: s, x: screenX, y: screenY });
+  });
+
+  if (projected2D.length === 0) {
+    log('No stones on the board to mark');
+    return;
+  }
+
+  let sampleDist = null;
+  const p0 = projected2D[0];
+  for (let i = 1; i < projected2D.length; i++) {
+    const d = Math.hypot(projected2D[i].x - p0.x, projected2D[i].y - p0.y);
+    if (d > 2 && (sampleDist === null || d < sampleDist)) sampleDist = d;
+  }
+  const radius = Math.min(90, Math.max(18, (sampleDist || 40) * 0.65));
+
+  let closest = null, closestDist = Infinity;
+  projected2D.forEach(({ stone, x, y }) => {
+    const dist = Math.hypot(x - tapX, y - tapY);
+    if (dist < closestDist) { closestDist = dist; closest = stone; }
+  });
+
+  if (closest && closestDist < radius) {
+    toggleDeadStone(closest.row, closest.col);
+  } else {
+    log(`Dead-mark tap missed — nearest stone was ${closestDist.toFixed(0)}px away`);
+  }
+}
+
+function toggleDeadStone(row, col) {
+  const stone = placedStones.find((s) => s.row === row && s.col === col);
+  if (!stone) return;
+
+  const group = getGroup(row, col); // all connected same-color stones, same logic used for captures
+  const key = row + ',' + col;
+  const alreadyDead = deadMarkers.has(key);
+
+  if (alreadyDead) {
+    group.forEach(([r, c]) => {
+      const k = r + ',' + c;
+      if (deadMarkers.has(k)) {
+        scene.remove(deadMarkers.get(k));
+        deadMarkers.delete(k);
+      }
+    });
+    log(`Unmarked dead group of ${group.length} stone(s), starting at (${row},${col})`);
+  } else {
+    // Black stones get a white X, White stones get a black X — opposite color for visibility
+    const xColor = stone.color === BLACK ? 0xffffff : 0x000000;
+    group.forEach(([r, c]) => {
+      const k = r + ',' + c;
+      if (deadMarkers.has(k)) return;
+      const s = placedStones.find((ps) => ps.row === r && ps.col === c);
+      if (!s) return;
+      const xMesh = createXMarker(xColor);
+      xMesh.position.copy(s.stoneMesh.position);
+      xMesh.position.y += 0.005;
+      scene.add(xMesh);
+      deadMarkers.set(k, xMesh);
+    });
+    log(`Marked dead group of ${group.length} stone(s), starting at (${row},${col})`);
+  }
+}
+
+function finalizeScoreWithDeadStones() {
+  deadMarkers.forEach((xMesh, key) => {
+    const [r, c] = key.split(',').map(Number);
+    const deadColor = boardState[r][c];
+    if (deadColor === EMPTY) return;
+
+    if (deadColor === BLACK) whiteCaptures++; else blackCaptures++;
+    boardState[r][c] = EMPTY;
+    removeStoneAt(r, c);
+    scene.remove(xMesh);
+  });
+  deadMarkers.clear();
+  updateCapturesUI();
+
+  markingDeadStones = false;
+  document.getElementById('finalize-btn').style.display = 'none';
+  endGame('two passes, dead stones removed');
+}
+
+document.getElementById('finalize-btn').addEventListener('click', finalizeScoreWithDeadStones);
+
 function onTouchTap(event) {
   if (!gridBuilt) return; // calibration taps are handled via WebXR 'select' instead
   if (event.target.closest && (event.target.closest('.control') || event.target.closest('.adjust-btn'))) return;
@@ -750,6 +876,11 @@ function onTouchTap(event) {
 
   const touch = event.changedTouches ? event.changedTouches[0] : event;
   const tapX = touch.clientX, tapY = touch.clientY;
+
+  if (markingDeadStones) {
+    handleDeadStoneTap(tapX, tapY);
+    return;
+  }
 
   const projected2D = [];
   dotMeshes.forEach((mesh) => {
