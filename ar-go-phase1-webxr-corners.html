@@ -62,6 +62,7 @@
   <button id="restore-btn" style="display:none;">Restore Previous Game</button>
   <button id="adjust-corners-btn">Adjust Corners</button>
   <button id="toggle-log-btn">Show Log</button>
+  <button id="coord-mode-btn">Camera Coord: normal</button>
 </div>
 
 <div id="adjust-ui" style="display:none; position:fixed; bottom:70px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
@@ -445,6 +446,13 @@ document.getElementById('adjust-corners-btn').addEventListener('click', startAdj
 document.getElementById('toggle-log-btn').addEventListener('click', () => {
   const isVisible = logEl.classList.toggle('visible');
   document.getElementById('toggle-log-btn').textContent = isVisible ? 'Hide Log' : 'Show Log';
+});
+document.getElementById('coord-mode-btn').addEventListener('click', () => {
+  cameraCoordModeIndex = (cameraCoordModeIndex + 1) % COORD_MODES.length;
+  const modeName = COORD_MODES[cameraCoordModeIndex].name;
+  document.getElementById('coord-mode-btn').textContent = 'Camera Coord: ' + modeName;
+  log('Camera coord mode changed to: ' + modeName + ' — capturing a fresh baseline');
+  pendingBaselineCapture = true; // old baseline was sampled with the old mapping, now invalid
 });
 document.getElementById('adj-cancel').addEventListener('click', cancelAdjustment);
 
@@ -1398,6 +1406,22 @@ function ensureCameraBinding(session) {
   }
 }
 
+// The camera texture's orientation relative to our 3D coordinates is uncertain
+// (very likely rotated, based on two tests showing errors on different axes) —
+// these are all 8 possible axis-aligned corrections. Use "Camera Coord Mode" in
+// the menu to cycle through them and find the one that detects correctly.
+const COORD_MODES = [
+  { name: 'normal',      fn: (x, y) => [ x * 0.5 + 0.5, -y * 0.5 + 0.5] },
+  { name: 'flipX',       fn: (x, y) => [-x * 0.5 + 0.5, -y * 0.5 + 0.5] },
+  { name: 'flipY',       fn: (x, y) => [ x * 0.5 + 0.5,  y * 0.5 + 0.5] },
+  { name: 'flipXY',      fn: (x, y) => [-x * 0.5 + 0.5,  y * 0.5 + 0.5] },
+  { name: 'rot90',       fn: (x, y) => [ y * 0.5 + 0.5,  x * 0.5 + 0.5] },
+  { name: 'rot90flipX',  fn: (x, y) => [-y * 0.5 + 0.5,  x * 0.5 + 0.5] },
+  { name: 'rot90flipY',  fn: (x, y) => [ y * 0.5 + 0.5, -x * 0.5 + 0.5] },
+  { name: 'rot90flipXY', fn: (x, y) => [-y * 0.5 + 0.5, -x * 0.5 + 0.5] }
+];
+let cameraCoordModeIndex = 0;
+
 let loggedTextureDims = false;
 
 function sampleIntersectionBrightness(gl, texture, texWidth, texHeight, worldPos) {
@@ -1407,8 +1431,9 @@ function sampleIntersectionBrightness(gl, texture, texWidth, texHeight, worldPos
   }
   const ndc = worldPos.clone().project(camera);
   if (ndc.z > 1) return null; // behind camera
-  const texX = Math.round((ndc.x * 0.5 + 0.5) * texWidth);
-  const texY = Math.round((-ndc.y * 0.5 + 0.5) * texHeight); // flipped to match camera image row order
+  const [normX, normY] = COORD_MODES[cameraCoordModeIndex].fn(ndc.x, ndc.y);
+  const texX = Math.round(normX * texWidth);
+  const texY = Math.round(normY * texHeight);
   if (texX < 0 || texX >= texWidth || texY < 0 || texY >= texHeight) return null;
 
   if (!sampleFramebuffer) sampleFramebuffer = gl.createFramebuffer();
