@@ -97,8 +97,12 @@ let hitTestSource = null;
 let hitTestSourceRequested = false;
 
 const cornerNames = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
-let corners = []; // THREE.Vector3[]
-let cornersBackup = []; // snapshot taken when entering fine-tune mode, for Cancel
+let corners = []; // THREE.Vector3[] — derived every frame as cornerBasePosition + cornerOffsets
+let cornerBasePosition = [null, null, null, null]; // raw tracked position per corner (continuously refined by its anchor, if supported)
+let cornerOffsets = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]; // your fine-tune nudges, layered on top of the base
+let cornerAnchors = [null, null, null, null]; // XRAnchor objects, once created
+let latestHitTestResult = null; // updated every frame during the pre-calibration hit-test phase
+let cornersBackup = []; // snapshot of cornerOffsets taken when entering fine-tune mode, for Cancel
 let calibrated = false;
 let adjusting = false;
 let selectedCorner = 0;
@@ -142,7 +146,7 @@ function init() {
       } else {
         document.body.appendChild(ARButton.createButton(renderer, {
           requiredFeatures: ['hit-test'],
-          optionalFeatures: ['dom-overlay'],
+          optionalFeatures: ['dom-overlay', 'anchors'],
           domOverlay: { root: document.body }
         }));
       }
@@ -241,13 +245,30 @@ function onSelect() {
 
   if (!calibrated) {
     const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+    const idx = corners.length; // 0..3, this tap's corner index
+    cornerBasePosition[idx] = pos.clone();
+    cornerOffsets[idx] = new THREE.Vector3();
     corners.push(pos.clone());
-    log(`Corner ${corners.length} (${cornerNames[corners.length - 1]}) placed at x=${pos.x.toFixed(3)}, y=${pos.y.toFixed(3)}, z=${pos.z.toFixed(3)}`);
+    log(`Corner ${idx + 1} (${cornerNames[idx]}) placed at x=${pos.x.toFixed(3)}, y=${pos.y.toFixed(3)}, z=${pos.z.toFixed(3)}`);
 
     const marker = createRingCrosshairMarker(0x00ff88);
     marker.position.copy(pos);
     scene.add(marker);
     cornerMarkers.push(marker);
+
+    // Try to upgrade this tap into a continuously-tracked anchor — the
+    // underlying system keeps refining its position over time, which is far
+    // more robust against tracking drift/jumps than a one-time snapshot.
+    if (latestHitTestResult && typeof latestHitTestResult.createAnchor === 'function') {
+      latestHitTestResult.createAnchor().then((anchor) => {
+        cornerAnchors[idx] = anchor;
+        log(`Corner ${idx + 1}: tracked anchor active`);
+      }).catch((err) => {
+        log(`Corner ${idx + 1}: anchor creation failed, using a fixed position instead (${err.message})`);
+      });
+    } else {
+      log(`Corner ${idx + 1}: anchors not supported here, using a fixed position`);
+    }
 
     if (corners.length < 4) {
       statusEl.textContent = `Corner ${corners.length}/4 placed. Now tap the board's ${cornerNames[corners.length]} corner.`;
@@ -256,7 +277,7 @@ function onSelect() {
       adjusting = true;
       selectedCorner = 0;
       reticle.visible = false;
-      cornersBackup = corners.map((c) => c.clone());
+      cornersBackup = cornerOffsets.map((o) => o.clone());
       showAdjustUI();
       updateAdjustStatus();
     }
@@ -271,7 +292,9 @@ function updateAdjustStatus() {
 function correctCornersToRectangle() {
   // A real board is a perfect rectangle — reconstruct an ideal parallelogram
   // from the 4 taps instead of trusting each one exactly. Any skew between
-  // opposite edges is treated as tap noise and averaged out.
+  // opposite edges is treated as tap noise and averaged out. The correction
+  // is stored as a permanent offset (not a direct overwrite), so it keeps
+  // working correctly even as anchors continue refining their base position.
   const tl = corners[0], tr = corners[1], bl = corners[2], br = corners[3];
 
   const widthVec = new THREE.Vector3()
@@ -286,10 +309,18 @@ function correctCornersToRectangle() {
 
   const halfW = widthVec.clone().multiplyScalar(0.5);
   const halfH = heightVec.clone().multiplyScalar(0.5);
-  corners[0] = center.clone().sub(halfW).sub(halfH); // TL
-  corners[1] = center.clone().add(halfW).sub(halfH); // TR
-  corners[2] = center.clone().sub(halfW).add(halfH); // BL
-  corners[3] = center.clone().add(halfW).add(halfH); // BR
+  const idealCorners = [
+    center.clone().sub(halfW).sub(halfH), // TL
+    center.clone().add(halfW).sub(halfH), // TR
+    center.clone().sub(halfW).add(halfH), // BL
+    center.clone().add(halfW).add(halfH)  // BR
+  ];
+
+  for (let i = 0; i < 4; i++) {
+    const base = cornerBasePosition[i] || corners[i];
+    cornerOffsets[i] = idealCorners[i].clone().sub(base);
+    corners[i].copy(idealCorners[i]);
+  }
   log('Corners geometrically corrected to an ideal rectangle, averaging out tap noise');
 }
 
@@ -328,7 +359,7 @@ function startAdjustCorners() {
   isReAdjusting = true;
   adjusting = true;
   selectedCorner = 0;
-  cornersBackup = corners.map((c) => c.clone());
+  cornersBackup = cornerOffsets.map((o) => o.clone());
 
   cornerMarkers.length = 0;
   corners.forEach((pos) => {
@@ -366,8 +397,13 @@ function finalizeAdjustment() {
 function cancelAdjustment() {
   if (cornersBackup.length !== 4) { log('Nothing to cancel back to'); return; }
 
-  corners = cornersBackup.map((c) => c.clone());
-  corners.forEach((c, i) => { if (cornerMarkers[i]) cornerMarkers[i].position.copy(c); });
+  cornerOffsets = cornersBackup.map((o) => o.clone());
+  for (let i = 0; i < 4; i++) {
+    if (cornerBasePosition[i]) {
+      corners[i].copy(cornerBasePosition[i]).add(cornerOffsets[i]);
+      if (cornerMarkers[i]) cornerMarkers[i].position.copy(corners[i]);
+    }
+  }
   if (gridBuilt) reapplyGridHeight();
 
   document.getElementById('bulk-height-slider').value = 0;
@@ -423,6 +459,10 @@ document.getElementById('restore-btn').addEventListener('click', doRestoreGame);
 
 function resetCalibration() {
   corners = [];
+  cornerBasePosition = [null, null, null, null];
+  cornerOffsets = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  cornerAnchors.forEach((a) => { if (a && typeof a.delete === 'function') { try { a.delete(); } catch (e) {} } });
+  cornerAnchors = [null, null, null, null];
   calibrated = false;
   adjusting = false;
   cornerMarkers.forEach((m) => scene.remove(m));
@@ -506,13 +546,14 @@ document.querySelectorAll('.corner-select').forEach((btn) => {
   });
 });
 
-// Nudge the selected corner along world X/Z (approximates the board's horizontal plane)
+// Nudge the selected corner's offset along world X/Z (approximates the board's horizontal plane)
 let xSliderBase = 0;
 const xSlider = document.getElementById('adj-x-slider');
 xSlider.addEventListener('input', (e) => {
   const newVal = parseFloat(e.target.value);
   const delta = newVal - xSliderBase;
-  corners[selectedCorner].x += delta;
+  cornerOffsets[selectedCorner].x += delta;
+  if (cornerBasePosition[selectedCorner]) corners[selectedCorner].copy(cornerBasePosition[selectedCorner]).add(cornerOffsets[selectedCorner]);
   cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]);
   xSliderBase = newVal;
   updateHeightGapIndicator();
@@ -524,7 +565,8 @@ const zSlider = document.getElementById('adj-z-slider');
 zSlider.addEventListener('input', (e) => {
   const newVal = parseFloat(e.target.value);
   const delta = newVal - zSliderBase;
-  corners[selectedCorner].z += delta;
+  cornerOffsets[selectedCorner].z += delta;
+  if (cornerBasePosition[selectedCorner]) corners[selectedCorner].copy(cornerBasePosition[selectedCorner]).add(cornerOffsets[selectedCorner]);
   cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]);
   zSliderBase = newVal;
   updateHeightGapIndicator();
@@ -535,9 +577,10 @@ const bulkHeightSlider = document.getElementById('bulk-height-slider');
 bulkHeightSlider.addEventListener('input', (e) => {
   const newVal = parseFloat(e.target.value);
   const delta = newVal - bulkHeightSliderBase;
-  corners.forEach((c, i) => {
-    c.y += delta;
-    if (cornerMarkers[i]) cornerMarkers[i].position.copy(c);
+  cornerOffsets.forEach((o, i) => {
+    o.y += delta;
+    if (cornerBasePosition[i]) corners[i].copy(cornerBasePosition[i]).add(o);
+    if (cornerMarkers[i]) cornerMarkers[i].position.copy(corners[i]);
   });
   bulkHeightSliderBase = newVal;
   updateHeightGapIndicator();
@@ -549,7 +592,8 @@ const cornerHeightSlider = document.getElementById('corner-height-slider');
 cornerHeightSlider.addEventListener('input', (e) => {
   const newVal = parseFloat(e.target.value);
   const delta = newVal - cornerHeightSliderBase;
-  corners[selectedCorner].y += delta;
+  cornerOffsets[selectedCorner].y += delta;
+  if (cornerBasePosition[selectedCorner]) corners[selectedCorner].copy(cornerBasePosition[selectedCorner]).add(cornerOffsets[selectedCorner]);
   cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]);
   cornerHeightSliderBase = newVal;
   updateHeightGapIndicator();
@@ -1322,12 +1366,35 @@ function render(timestamp, frame) {
         const hitTestResults = frame.getHitTestResults(hitTestSource);
         if (hitTestResults.length > 0) {
           const hit = hitTestResults[0];
+          latestHitTestResult = hit;
           reticle.visible = true;
           reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
         } else {
+          latestHitTestResult = null;
           reticle.visible = false;
         }
       }
+
+      // Continuously refine each corner's position from its anchor, if it has one —
+      // this is what actually protects against the tracking drift/jumps we saw before,
+      // since the underlying system keeps improving the anchor's accuracy over time.
+      let anyCornerUpdated = false;
+      for (let i = 0; i < 4; i++) {
+        if (cornerAnchors[i]) {
+          const pose = frame.getPose(cornerAnchors[i].anchorSpace, referenceSpace);
+          if (pose) {
+            if (!cornerBasePosition[i]) cornerBasePosition[i] = new THREE.Vector3();
+            cornerBasePosition[i].set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+            anyCornerUpdated = true;
+          }
+        }
+        if (cornerBasePosition[i]) {
+          if (!corners[i]) corners[i] = new THREE.Vector3();
+          corners[i].copy(cornerBasePosition[i]).add(cornerOffsets[i]);
+          if (cornerMarkers[i]) cornerMarkers[i].position.copy(corners[i]);
+        }
+      }
+      if (gridBuilt && anyCornerUpdated) reapplyGridHeight();
     }
 
     renderer.render(scene, camera);
