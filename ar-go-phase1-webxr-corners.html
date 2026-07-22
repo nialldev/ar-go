@@ -596,15 +596,20 @@ function computeScore() {
   };
 }
 
+const KOMI = 7.5; // standard compensation for White under area/Chinese scoring rules
+
 function endGame(reason) {
   gameOver = true;
   const score = computeScore();
-  const winner = score.blackTotal > score.whiteTotal ? 'Black' : score.whiteTotal > score.blackTotal ? 'White' : 'Nobody';
-  const margin = Math.abs(score.blackTotal - score.whiteTotal);
+  const whiteWithKomi = score.whiteTotal + KOMI;
+  const winner = score.blackTotal > whiteWithKomi ? 'Black' : whiteWithKomi > score.blackTotal ? 'White' : 'Nobody';
+  const margin = Math.abs(score.blackTotal - whiteWithKomi);
+
+  const breakdown = `Black ${score.blackTotal} (${score.blackStones} stones + ${score.blackTerritory} territory) vs White ${score.whiteTotal} (${score.whiteStones} stones + ${score.whiteTerritory} territory) + ${KOMI} komi = ${whiteWithKomi}`;
 
   const summary = winner === 'Nobody'
-    ? `Game over (${reason}). It's a tie: Black ${score.blackTotal} - White ${score.whiteTotal}.`
-    : `Game over (${reason}). ${winner} wins by ${margin}! Black ${score.blackTotal} (${score.blackStones} stones + ${score.blackTerritory} territory) - White ${score.whiteTotal} (${score.whiteStones} stones + ${score.whiteTerritory} territory).`;
+    ? `Game over (${reason}). It's a tie! ${breakdown}.`
+    : `Game over (${reason}). ${winner} wins by ${margin}! ${breakdown}.`;
 
   statusEl.textContent = summary;
   log(summary);
