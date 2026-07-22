@@ -88,7 +88,7 @@ let corners = []; // THREE.Vector3[]
 let calibrated = false;
 let adjusting = false;
 let selectedCorner = 0;
-const HEIGHT_OFFSET = 0.01; // flipped sign — previous value moved things the wrong way
+const HEIGHT_OFFSET = 0.002; // reduced — even a small offset causes a big apparent shift at close/angled views
 const NUDGE_STEP = 0.003; // 3mm per arrow press
 
 const statusEl = document.getElementById('status');
