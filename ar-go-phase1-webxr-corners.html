@@ -63,6 +63,8 @@
   <button id="adjust-corners-btn">Adjust Corners</button>
   <button id="toggle-log-btn">Show Log</button>
   <button id="coord-mode-btn">Camera Coord: normal</button>
+  <button id="show-heatmap-btn">Show Heatmap</button>
+  <button id="clear-heatmap-btn">Clear Heatmap</button>
 </div>
 
 <div id="adjust-ui" style="display:none; position:fixed; bottom:70px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
@@ -712,11 +714,10 @@ function buildGrid() {
   lineMeshes.length = 0;
 
   const dotGeo = new THREE.SphereGeometry(0.005, 8, 8);
-  const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0 });
 
   for (let row = 0; row < GRID_SIZE; row++) {
     for (let col = 0; col < GRID_SIZE; col++) {
-      const mesh = new THREE.Mesh(dotGeo, dotMat);
+      const mesh = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0 }));
       mesh.userData.row = row;
       mesh.userData.col = col;
       gridPosition(row, col, mesh.position);
@@ -1432,19 +1433,27 @@ function sampleIntersectionBrightness(gl, texture, texWidth, texHeight, worldPos
   const ndc = worldPos.clone().project(camera);
   if (ndc.z > 1) return null; // behind camera
   const [normX, normY] = COORD_MODES[cameraCoordModeIndex].fn(ndc.x, ndc.y);
-  const texX = Math.round(normX * texWidth);
-  const texY = Math.round(normY * texHeight);
-  if (texX < 0 || texX >= texWidth || texY < 0 || texY >= texHeight) return null;
+  const centerX = Math.round(normX * texWidth);
+  const centerY = Math.round(normY * texHeight);
+
+  const BLOCK = 5; // sample a 5x5 block instead of a single pixel, to average out noise
+  const half = Math.floor(BLOCK / 2);
+  const x0 = centerX - half, y0 = centerY - half;
+  if (x0 < 0 || y0 < 0 || x0 + BLOCK > texWidth || y0 + BLOCK > texHeight) return null;
 
   if (!sampleFramebuffer) sampleFramebuffer = gl.createFramebuffer();
   const prevFB = gl.getParameter(gl.FRAMEBUFFER_BINDING);
   gl.bindFramebuffer(gl.FRAMEBUFFER, sampleFramebuffer);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-  const pixel = new Uint8Array(4);
-  gl.readPixels(texX, texY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+  const pixels = new Uint8Array(BLOCK * BLOCK * 4);
+  gl.readPixels(x0, y0, BLOCK, BLOCK, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
   gl.bindFramebuffer(gl.FRAMEBUFFER, prevFB); // restore, so Three.js's own render call right after isn't broken
 
-  return (pixel[0] + pixel[1] + pixel[2]) / 3;
+  let sum = 0;
+  for (let i = 0; i < BLOCK * BLOCK; i++) {
+    sum += (pixels[i * 4] + pixels[i * 4 + 1] + pixels[i * 4 + 2]) / 3;
+  }
+  return sum / (BLOCK * BLOCK);
 }
 
 function captureEmptyIntersectionSnapshot(frame, referenceSpace) {
@@ -1489,6 +1498,45 @@ document.getElementById('confirm-move-btn').addEventListener('click', () => {
   log('Capturing camera image to detect your placed stone...');
   pendingConfirmCapture = true;
 });
+
+let pendingDebugHeatmap = false;
+
+function showDebugHeatmap(frame, referenceSpace) {
+  const snap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
+  if (!snap) { log('Heatmap: capture failed'); return; }
+
+  let maxDelta = 0;
+  const deltas = {};
+  Object.keys(boardSnapshot).forEach((key) => {
+    if (snap[key] === undefined) return;
+    const d = Math.abs(boardSnapshot[key] - snap[key]);
+    deltas[key] = d;
+    if (d > maxDelta) maxDelta = d;
+  });
+  log(`Heatmap shown — max brightness change found: ${maxDelta.toFixed(0)} (red = biggest change)`);
+
+  dotMeshes.forEach((mesh) => {
+    const key = mesh.userData.row + ',' + mesh.userData.col;
+    const d = deltas[key] || 0;
+    const t = maxDelta > 0 ? d / maxDelta : 0;
+    mesh.material.opacity = Math.max(0.18, t);
+    mesh.material.color.setRGB(t, 1 - t, 0); // green (no change) -> red (biggest change)
+  });
+}
+
+function clearDebugHeatmap() {
+  dotMeshes.forEach((mesh) => {
+    mesh.material.opacity = 0;
+    mesh.material.color.setHex(0xffcc00);
+  });
+  log('Heatmap cleared');
+}
+
+document.getElementById('show-heatmap-btn').addEventListener('click', () => {
+  if (!cameraGlBinding) { log('Camera auto-detect not available'); return; }
+  pendingDebugHeatmap = true;
+});
+document.getElementById('clear-heatmap-btn').addEventListener('click', clearDebugHeatmap);
 
 function updateConfirmButtonVisibility() {
   const btn = document.getElementById('confirm-move-btn');
@@ -1566,6 +1614,11 @@ function render(timestamp, frame) {
             log('Camera auto-detect: baseline capture failed — manual tap-to-place still works');
           }
           pendingBaselineCapture = false;
+        }
+
+        if (pendingDebugHeatmap) {
+          pendingDebugHeatmap = false;
+          showDebugHeatmap(frame, referenceSpace);
         }
 
         if (pendingConfirmCapture) {
