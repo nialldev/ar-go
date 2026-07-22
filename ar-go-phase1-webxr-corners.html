@@ -8,20 +8,30 @@
   html, body { margin: 0; padding: 0; overflow: hidden; height: 100%; background: #000; font-family: -apple-system, system-ui, sans-serif; }
   #status {
     position: fixed; top: 0; left: 0; right: 0; z-index: 50;
-    background: rgba(0,0,0,0.75); color: white; padding: 10px 14px; font-size: 13px; line-height: 1.4;
+    background: rgba(0,0,0,0.75); color: white; padding: 10px 60px 10px 14px; font-size: 13px; line-height: 1.4;
   }
   #status.ready { background: rgba(0,120,0,0.75); }
-  #log {
-    position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
-    background: rgba(0,0,0,0.75); color: #0f8; padding: 10px 14px;
-    font-family: monospace; font-size: 12px; max-height: 24vh; overflow-y: auto; white-space: pre-wrap;
-  }
+  #log { display: none; } /* kept functional under the hood, just hidden from view */
   #not-supported {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center;
     color: white; background: #111; text-align: center; padding: 24px; box-sizing: border-box; font-size: 16px; line-height: 1.5;
   }
-  button.control {
-    position: fixed; z-index: 60; font-size: 13px; padding: 8px 12px;
+  #menu-toggle {
+    position: fixed; top: 8px; right: 8px; z-index: 70; font-size: 20px; padding: 6px 12px;
+    background: rgba(0,0,0,0.8); color: white; border: none; border-radius: 8px;
+  }
+  #menu-panel {
+    display: none; position: fixed; top: 50px; right: 8px; z-index: 70;
+    background: rgba(20,20,20,0.95); border-radius: 10px; padding: 8px;
+    display: flex; flex-direction: column; gap: 6px; min-width: 150px;
+  }
+  #menu-panel button {
+    font-size: 14px; padding: 10px 12px; border: none; border-radius: 6px; background: #eee; color: #111;
+  }
+  #menu-panel button#finalize-btn { background: #0a0; color: white; }
+  #captures {
+    position: fixed; top: 52px; left: 0; right: 0; z-index: 55; text-align: center; color: white;
+    font-size: 13px; background: rgba(0,0,0,0.6); padding: 4px;
   }
   .adjust-btn {
     font-size: 13px; padding: 8px 12px; z-index: 61;
@@ -31,15 +41,19 @@
 <body>
 
 <div id="status">Tap "Start AR", then tap your board's 4 corners in order: top-left, top-right, bottom-left, bottom-right.</div>
+<div id="captures">Captures — Black: 0 &nbsp; White: 0</div>
 <div id="log">Waiting to start...</div>
 <div id="not-supported" style="display:none;"></div>
-<button id="recalibrate" class="control" style="top:54px; right:10px;">Recalibrate</button>
-<button id="pass-btn" class="control" style="top:54px; left:10px;">Pass</button>
-<button id="resign-btn" class="control" style="top:96px; left:10px;">Resign</button>
-<button id="clear-stones-btn" class="control" style="top:96px; right:10px;">Clear Stones</button>
-<button id="undo-btn" class="control" style="top:138px; right:10px;">Undo</button>
-<button id="finalize-btn" class="control" style="display:none; top:222px; right:10px; background:#0a0; color:white;">Finalize Score</button>
-<div id="captures" style="position:fixed; top:180px; left:0; right:0; z-index:55; text-align:center; color:white; font-family:-apple-system, system-ui, sans-serif; font-size:13px; background:rgba(0,0,0,0.6); padding:4px;">Captures — Black: 0 &nbsp; White: 0</div>
+
+<button id="menu-toggle">☰</button>
+<div id="menu-panel">
+  <button id="pass-btn">Pass</button>
+  <button id="resign-btn">Resign</button>
+  <button id="undo-btn">Undo</button>
+  <button id="clear-stones-btn">Clear Stones</button>
+  <button id="recalibrate">Recalibrate</button>
+  <button id="finalize-btn" style="display:none;">Finalize Score</button>
+</div>
 
 <div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
   <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
@@ -348,7 +362,7 @@ function clearGrid() {
 
 function buildGrid() {
   const dotGeo = new THREE.SphereGeometry(0.005, 8, 8);
-  const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.85 });
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0 });
 
   for (let row = 0; row < GRID_SIZE; row++) {
     for (let col = 0; col < GRID_SIZE; col++) {
@@ -690,6 +704,15 @@ function endGame(reason) {
   log(summary);
 }
 
+const menuToggle = document.getElementById('menu-toggle');
+const menuPanel = document.getElementById('menu-panel');
+menuToggle.addEventListener('click', () => {
+  menuPanel.style.display = menuPanel.style.display === 'flex' ? 'none' : 'flex';
+});
+menuPanel.addEventListener('click', (e) => {
+  if (e.target.tagName === 'BUTTON') menuPanel.style.display = 'none'; // auto-close after any action
+});
+
 document.getElementById('pass-btn').addEventListener('click', doPass);
 document.getElementById('resign-btn').addEventListener('click', doResign);
 
@@ -907,7 +930,7 @@ document.getElementById('finalize-btn').addEventListener('click', finalizeScoreW
 
 function onTouchTap(event) {
   if (!gridBuilt) return; // calibration taps are handled via WebXR 'select' instead
-  if (event.target.closest && (event.target.closest('.control') || event.target.closest('.adjust-btn'))) return;
+  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('.adjust-btn'))) return;
 
   const now = Date.now();
   if (now - lastTapTime < 400) return;
