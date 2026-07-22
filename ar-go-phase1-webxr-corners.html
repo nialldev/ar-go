@@ -56,6 +56,7 @@
   <button id="restore-btn" style="display:none;">Restore Previous Game</button>
   <button id="grid-up-btn">Grid Height ↑</button>
   <button id="grid-down-btn">Grid Height ↓</button>
+  <button id="adjust-corners-btn">Adjust Corners</button>
 </div>
 
 <div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
@@ -261,6 +262,31 @@ function updateAdjustStatus() {
   statusEl.textContent = `Fine-tune corners: adjusting ${cornerNames[selectedCorner]}. Use arrows to nudge it onto the real corner, then tap another corner button or Confirm.`;
 }
 
+function correctCornersToRectangle() {
+  // A real board is a perfect rectangle — reconstruct an ideal parallelogram
+  // from the 4 taps instead of trusting each one exactly. Any skew between
+  // opposite edges is treated as tap noise and averaged out.
+  const tl = corners[0], tr = corners[1], bl = corners[2], br = corners[3];
+
+  const widthVec = new THREE.Vector3()
+    .addVectors(new THREE.Vector3().subVectors(tr, tl), new THREE.Vector3().subVectors(br, bl))
+    .multiplyScalar(0.5);
+  const heightVec = new THREE.Vector3()
+    .addVectors(new THREE.Vector3().subVectors(bl, tl), new THREE.Vector3().subVectors(br, tr))
+    .multiplyScalar(0.5);
+  const center = new THREE.Vector3()
+    .add(tl).add(tr).add(bl).add(br)
+    .multiplyScalar(0.25);
+
+  const halfW = widthVec.clone().multiplyScalar(0.5);
+  const halfH = heightVec.clone().multiplyScalar(0.5);
+  corners[0] = center.clone().sub(halfW).sub(halfH); // TL
+  corners[1] = center.clone().add(halfW).sub(halfH); // TR
+  corners[2] = center.clone().sub(halfW).add(halfH); // BL
+  corners[3] = center.clone().add(halfW).add(halfH); // BR
+  log('Corners geometrically corrected to an ideal rectangle, averaging out tap noise');
+}
+
 function finalizeCalibration() {
   try {
     adjusting = false;
@@ -269,28 +295,7 @@ function finalizeCalibration() {
     cornerMarkers.forEach((m) => scene.remove(m));
     statusEl.classList.add('ready');
 
-    // A real board is a perfect rectangle — reconstruct an ideal parallelogram
-    // from the 4 taps instead of trusting each one exactly. Any skew between
-    // opposite edges is treated as tap noise and averaged out.
-    const tl = corners[0], tr = corners[1], bl = corners[2], br = corners[3];
-
-    const widthVec = new THREE.Vector3()
-      .addVectors(new THREE.Vector3().subVectors(tr, tl), new THREE.Vector3().subVectors(br, bl))
-      .multiplyScalar(0.5);
-    const heightVec = new THREE.Vector3()
-      .addVectors(new THREE.Vector3().subVectors(bl, tl), new THREE.Vector3().subVectors(br, tr))
-      .multiplyScalar(0.5);
-    const center = new THREE.Vector3()
-      .add(tl).add(tr).add(bl).add(br)
-      .multiplyScalar(0.25);
-
-    const halfW = widthVec.clone().multiplyScalar(0.5);
-    const halfH = heightVec.clone().multiplyScalar(0.5);
-    corners[0] = center.clone().sub(halfW).sub(halfH); // TL
-    corners[1] = center.clone().add(halfW).sub(halfH); // TR
-    corners[2] = center.clone().sub(halfW).add(halfH); // BL
-    corners[3] = center.clone().add(halfW).add(halfH); // BR
-    log('Corners geometrically corrected to an ideal rectangle, averaging out tap noise');
+    correctCornersToRectangle();
 
     buildGrid();
     resetBoardState();
@@ -307,6 +312,51 @@ function finalizeCalibration() {
     console.error(err);
   }
 }
+
+// --- Lighter re-adjustment path: tweak an EXISTING calibration without
+// re-tapping all 4 corners or losing the current game in progress ---
+let isReAdjusting = false;
+
+function startAdjustCorners() {
+  if (!calibrated) { log('Calibrate first'); return; }
+  isReAdjusting = true;
+  adjusting = true;
+  selectedCorner = 0;
+
+  cornerMarkers.length = 0;
+  corners.forEach((pos) => {
+    const marker = createRingCrosshairMarker(0x00ff88);
+    marker.position.copy(pos);
+    scene.add(marker);
+    cornerMarkers.push(marker);
+  });
+
+  showAdjustUI();
+  updateAdjustStatus();
+  log('Adjusting existing corners — your game is not affected until you Confirm');
+}
+
+function finalizeAdjustment() {
+  try {
+    isReAdjusting = false;
+    adjusting = false;
+    hideAdjustUI();
+    cornerMarkers.forEach((m) => scene.remove(m));
+    cornerMarkers.length = 0;
+
+    correctCornersToRectangle();
+
+    buildGrid(); // rebuilds dots/lines fresh from the adjusted corners
+    rebuildStonesFromBoardState(); // reposition any existing stones to match
+    updateTurnStatus();
+    log('Calibration adjusted — grid and stones repositioned, game state kept');
+  } catch (err) {
+    log('ERROR in finalizeAdjustment: ' + err.message);
+    console.error(err);
+  }
+}
+
+document.getElementById('adjust-corners-btn').addEventListener('click', startAdjustCorners);
 
 let pendingRestoreData = null;
 
@@ -382,7 +432,10 @@ document.getElementById('adj-down').addEventListener('click', () => { corners[se
 document.getElementById('adj-height-up').addEventListener('click', () => { corners[selectedCorner].y += NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
 document.getElementById('adj-height-down').addEventListener('click', () => { corners[selectedCorner].y -= NUDGE_STEP; cornerMarkers[selectedCorner].position.copy(corners[selectedCorner]); });
 
-document.getElementById('adj-confirm').addEventListener('click', finalizeCalibration);
+document.getElementById('adj-confirm').addEventListener('click', () => {
+  if (isReAdjusting) finalizeAdjustment();
+  else finalizeCalibration();
+});
 
 // --- Grid construction (reusing the same bilinear approach, now from 4 fixed real-world taps) ---
 const dotMeshes = [];
@@ -474,6 +527,13 @@ function clearGrid() {
 }
 
 function buildGrid() {
+  // Clear any previous grid visuals first — needed since this can now be called
+  // again during corner re-adjustment, not just once at initial calibration.
+  dotMeshes.forEach((m) => scene.remove(m));
+  dotMeshes.length = 0;
+  lineMeshes.forEach((m) => scene.remove(m));
+  lineMeshes.length = 0;
+
   const dotGeo = new THREE.SphereGeometry(0.005, 8, 8);
   const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0 });
 
