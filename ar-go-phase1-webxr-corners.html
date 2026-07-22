@@ -53,6 +53,7 @@
   <button id="clear-stones-btn">Clear Stones</button>
   <button id="recalibrate">Recalibrate</button>
   <button id="finalize-btn" style="display:none;">Finalize Score</button>
+  <button id="restore-btn" style="display:none;">Restore Previous Game</button>
 </div>
 
 <div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
@@ -266,11 +267,42 @@ function finalizeCalibration() {
     buildGrid();
     resetBoardState();
     updateTurnStatus();
+
+    const saved = loadGameState();
+    if (saved) {
+      pendingRestoreData = saved;
+      document.getElementById('restore-btn').style.display = 'block';
+      log('A previous game was found — tap Restore Previous Game in the menu to bring it back, or just start playing for a new game');
+    }
   } catch (err) {
     log('ERROR in finalizeCalibration/buildGrid: ' + err.message);
     console.error(err);
   }
 }
+
+let pendingRestoreData = null;
+
+function doRestoreGame() {
+  if (!pendingRestoreData) { log('No saved game to restore'); return; }
+  const saved = pendingRestoreData;
+  boardState = saved.boardState;
+  currentTurn = saved.currentTurn;
+  koPoint = saved.koPoint;
+  passCount = saved.passCount;
+  blackCaptures = saved.blackCaptures;
+  whiteCaptures = saved.whiteCaptures;
+  gameOver = saved.gameOver;
+  stoneCount = saved.stoneCount;
+  rebuildStonesFromBoardState();
+  updateCapturesUI();
+  if (!gameOver) updateTurnStatus();
+  log('Previous game restored');
+
+  pendingRestoreData = null;
+  document.getElementById('restore-btn').style.display = 'none';
+}
+
+document.getElementById('restore-btn').addEventListener('click', doRestoreGame);
 
 function resetCalibration() {
   corners = [];
@@ -420,6 +452,31 @@ let markingDeadStones = false;
 const deadMarkers = new Map(); // 'row,col' -> X marker mesh (Group), on stones
 const territoryMarkers = new Map(); // 'row,col' -> X marker mesh (Group), on empty territory points
 
+// --- Save/restore game state, so a crash or reload doesn't lose the game ---
+const SAVE_KEY = 'ar_go_save_v1';
+
+function saveGameState() {
+  try {
+    const data = { boardState, currentTurn, koPoint, passCount, blackCaptures, whiteCaptures, gameOver, stoneCount };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch (e) {
+    log('Could not save game state: ' + e.message);
+  }
+}
+
+function loadGameState() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearSavedGameState() {
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+}
+
 function resetBoardState() {
   boardState = [];
   for (let r = 0; r < GRID_SIZE; r++) boardState.push(new Array(GRID_SIZE).fill(EMPTY));
@@ -509,6 +566,7 @@ function doUndo() {
   updateCapturesUI();
   if (!gameOver) updateTurnStatus();
   log('Move undone');
+  saveGameState();
 }
 
 function doClearStones() {
@@ -517,6 +575,9 @@ function doClearStones() {
   moveHistory.length = 0;
   resetBoardState();
   updateTurnStatus();
+  clearSavedGameState();
+  pendingRestoreData = null;
+  document.getElementById('restore-btn').style.display = 'none';
   log('Stones cleared — calibration kept, ready for a new test game');
 }
 
@@ -575,10 +636,12 @@ function doPass() {
   koPoint = null; // any non-recapture action clears the ko restriction
   if (passCount >= 2) {
     enterDeadStoneMarking();
+    saveGameState();
     return;
   }
   currentTurn = currentTurn === BLACK ? WHITE : BLACK;
   updateTurnStatus();
+  saveGameState();
 }
 
 function enterDeadStoneMarking() {
@@ -597,6 +660,7 @@ function doResign() {
   gameOver = true;
   statusEl.textContent = `${resigningName} resigned. ${winnerName} wins!`;
   log(`${resigningName} resigned — ${winnerName} wins`);
+  saveGameState();
 }
 
 // Area (Chinese-style) scoring: stones on board + surrounded empty territory
@@ -833,6 +897,11 @@ function placeStoneAt(row, col) {
   passCount = 0;
   currentTurn = opponentColor;
   updateTurnStatus();
+  saveGameState();
+  if (pendingRestoreData) {
+    pendingRestoreData = null;
+    document.getElementById('restore-btn').style.display = 'none';
+  }
 }
 
 // --- Tap-to-place: screen-space nearest dot (only active once calibrated) ---
@@ -924,6 +993,7 @@ function finalizeScoreWithDeadStones() {
   markingDeadStones = false;
   document.getElementById('finalize-btn').style.display = 'none';
   endGame('two passes, dead stones removed');
+  saveGameState();
 }
 
 document.getElementById('finalize-btn').addEventListener('click', finalizeScoreWithDeadStones);
