@@ -11,7 +11,13 @@
     background: rgba(0,0,0,0.75); color: white; padding: 10px 60px 10px 14px; font-size: 13px; line-height: 1.4;
   }
   #status.ready { background: rgba(0,120,0,0.75); }
-  #log { display: none; } /* kept functional under the hood, just hidden from view */
+  #log {
+    display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 65;
+    background: rgba(0,0,0,0.85); color: #0f8; padding: 10px 14px;
+    font-family: monospace; font-size: 12px; max-height: 30vh; overflow-y: auto; white-space: pre-wrap;
+    pointer-events: none;
+  }
+  #log.visible { display: block; }
   #not-supported {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center;
     color: white; background: #111; text-align: center; padding: 24px; box-sizing: border-box; font-size: 16px; line-height: 1.5;
@@ -55,6 +61,7 @@
   <button id="finalize-btn" style="display:none;">Finalize Score</button>
   <button id="restore-btn" style="display:none;">Restore Previous Game</button>
   <button id="adjust-corners-btn">Adjust Corners</button>
+  <button id="toggle-log-btn">Show Log</button>
 </div>
 
 <div id="adjust-ui" style="display:none; position:fixed; bottom:70px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
@@ -431,6 +438,10 @@ function cancelAdjustment() {
 }
 
 document.getElementById('adjust-corners-btn').addEventListener('click', startAdjustCorners);
+document.getElementById('toggle-log-btn').addEventListener('click', () => {
+  const isVisible = logEl.classList.toggle('visible');
+  document.getElementById('toggle-log-btn').textContent = isVisible ? 'Hide Log' : 'Show Log';
+});
 document.getElementById('adj-cancel').addEventListener('click', cancelAdjustment);
 
 let pendingRestoreData = null;
