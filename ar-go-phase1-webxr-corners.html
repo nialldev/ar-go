@@ -1505,11 +1505,13 @@ function render(timestamp, frame) {
       }
 
       // Continuously refine each corner's position from its anchor, if it has one —
-      // this is what actually protects against the tracking drift/jumps we saw before,
-      // since the underlying system keeps improving the anchor's accuracy over time.
+      // this protects against tracking drift/jumps during actual gameplay. But it's
+      // paused for the entire calibration/adjustment process (tapping AND fine-tuning),
+      // since the anchor's own ongoing refinement would otherwise fight with manual
+      // input, making everything feel jumpy while you're setting things up.
       let anyCornerUpdated = false;
       for (let i = 0; i < 4; i++) {
-        if (cornerAnchors[i]) {
+        if (cornerAnchors[i] && calibrated && !adjusting) {
           const pose = frame.getPose(cornerAnchors[i].anchorSpace, referenceSpace);
           if (pose) {
             if (!cornerBasePosition[i]) cornerBasePosition[i] = new THREE.Vector3();
