@@ -403,7 +403,8 @@ let gameOver = false;
 let blackCaptures = 0; // stones Black has captured (i.e. White stones removed)
 let whiteCaptures = 0; // stones White has captured
 let markingDeadStones = false;
-const deadMarkers = new Map(); // 'row,col' -> X marker mesh (Group)
+const deadMarkers = new Map(); // 'row,col' -> X marker mesh (Group), on stones
+const territoryMarkers = new Map(); // 'row,col' -> X marker mesh (Group), on empty territory points
 
 function resetBoardState() {
   boardState = [];
@@ -418,6 +419,7 @@ function resetBoardState() {
   markingDeadStones = false;
   deadMarkers.forEach((xMesh) => scene.remove(xMesh));
   deadMarkers.clear();
+  clearTerritoryMarkers();
   document.getElementById('finalize-btn').style.display = 'none';
 }
 
@@ -476,6 +478,7 @@ function doUndo() {
     markingDeadStones = false;
     deadMarkers.forEach((xMesh) => scene.remove(xMesh));
     deadMarkers.clear();
+    clearTerritoryMarkers();
     document.getElementById('finalize-btn').style.display = 'none';
     log('Cancelled dead-stone marking to undo');
   }
@@ -569,6 +572,7 @@ function enterDeadStoneMarking() {
   document.getElementById('finalize-btn').style.display = 'block';
   statusEl.textContent = 'Both players passed. Tap any stone to mark it dead (X), then hit Finalize Score.';
   log('Entered dead-stone marking phase — tap stones to toggle dead, then Finalize Score');
+  updateTerritoryPreview();
 }
 
 function doResign() {
@@ -582,23 +586,13 @@ function doResign() {
 }
 
 // Area (Chinese-style) scoring: stones on board + surrounded empty territory
-function computeScore() {
-  let blackStones = 0, whiteStones = 0;
-  for (let r = 0; r < GRID_SIZE; r++) {
-    for (let c = 0; c < GRID_SIZE; c++) {
-      if (boardState[r][c] === BLACK) blackStones++;
-      else if (boardState[r][c] === WHITE) whiteStones++;
-    }
-  }
-
-  let blackTerritory = 0, whiteTerritory = 0;
+function computeTerritoryRegions(board) {
+  const regions = [];
   const visited = new Set();
-
   for (let r = 0; r < GRID_SIZE; r++) {
     for (let c = 0; c < GRID_SIZE; c++) {
-      if (boardState[r][c] !== EMPTY || visited.has(r + ',' + c)) continue;
+      if (board[r][c] !== EMPTY || visited.has(r + ',' + c)) continue;
 
-      // Flood-fill this empty region, tracking which stone colors border it
       const region = [];
       const borderingColors = new Set();
       const stack = [[r, c]];
@@ -609,25 +603,72 @@ function computeScore() {
         visited.add(key);
         region.push([cr, cc]);
         neighborsOf(cr, cc).forEach(([nr, nc]) => {
-          const val = boardState[nr][nc];
+          const val = board[nr][nc];
           if (val === EMPTY && !visited.has(nr + ',' + nc)) stack.push([nr, nc]);
           else if (val === BLACK || val === WHITE) borderingColors.add(val);
         });
       }
 
-      if (borderingColors.size === 1) {
-        if (borderingColors.has(BLACK)) blackTerritory += region.length;
-        else whiteTerritory += region.length;
-      }
-      // If bordered by both colors (or somehow neither), it's neutral (dame) — no score either way
+      const owner = borderingColors.size === 1 ? [...borderingColors][0] : null;
+      regions.push({ region, owner });
     }
   }
+  return regions;
+}
+
+function computeScore() {
+  let blackStones = 0, whiteStones = 0;
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (boardState[r][c] === BLACK) blackStones++;
+      else if (boardState[r][c] === WHITE) whiteStones++;
+    }
+  }
+
+  let blackTerritory = 0, whiteTerritory = 0;
+  computeTerritoryRegions(boardState).forEach(({ region, owner }) => {
+    if (owner === BLACK) blackTerritory += region.length;
+    else if (owner === WHITE) whiteTerritory += region.length;
+    // owner === null means contested/neutral (dame) — no score either way
+  });
 
   return {
     blackStones, whiteStones, blackTerritory, whiteTerritory,
     blackTotal: blackStones + blackTerritory,
     whiteTotal: whiteStones + whiteTerritory
   };
+}
+
+function clearTerritoryMarkers() {
+  territoryMarkers.forEach((m) => scene.remove(m));
+  territoryMarkers.clear();
+}
+
+// Shows an X (in the owning color) on every empty point that's currently
+// unambiguously one player's territory. Areas still touching an unmarked
+// (undecided) stone of both colors stay unmarked, since ownership isn't settled yet.
+function updateTerritoryPreview() {
+  clearTerritoryMarkers();
+
+  const virtualBoard = boardState.map((row) => row.slice());
+  deadMarkers.forEach((_, key) => {
+    const [r, c] = key.split(',').map(Number);
+    virtualBoard[r][c] = EMPTY;
+  });
+
+  computeTerritoryRegions(virtualBoard).forEach(({ region, owner }) => {
+    if (!owner) return; // contested/neutral — leave unmarked
+    const xColor = owner === BLACK ? 0x000000 : 0xffffff;
+    region.forEach(([r, c]) => {
+      const pos = new THREE.Vector3();
+      gridPosition(r, c, pos);
+      const xMesh = createXMarker(xColor);
+      xMesh.position.copy(pos);
+      xMesh.position.y += 0.001;
+      scene.add(xMesh);
+      territoryMarkers.set(r + ',' + c, xMesh);
+    });
+  });
 }
 
 const KOMI = 7.5; // standard compensation for White under area/Chinese scoring rules
@@ -842,6 +883,7 @@ function toggleDeadStone(row, col) {
     });
     log(`Marked dead group of ${group.length} stone(s), starting at (${row},${col})`);
   }
+  updateTerritoryPreview();
 }
 
 function finalizeScoreWithDeadStones() {
@@ -854,6 +896,7 @@ function finalizeScoreWithDeadStones() {
     boardState[r][c] = EMPTY; // counts as captured/empty for scoring, but stays visible on screen
   });
   updateCapturesUI();
+  updateTerritoryPreview(); // recompute with the final (post-removal) board state
 
   markingDeadStones = false;
   document.getElementById('finalize-btn').style.display = 'none';
