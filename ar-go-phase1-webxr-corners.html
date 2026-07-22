@@ -1330,7 +1330,7 @@ document.getElementById('finalize-btn').addEventListener('click', finalizeScoreW
 
 function onTouchTap(event) {
   if (!gridBuilt) return; // calibration taps are handled via WebXR 'select' instead
-  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('.adjust-btn') || event.target.closest('#log'))) return;
+  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('.adjust-btn') || event.target.closest('#log') || event.target.closest('#confirm-move-btn'))) return;
 
   const now = Date.now();
   if (now - lastTapTime < 400) return;
