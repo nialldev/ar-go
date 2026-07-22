@@ -54,6 +54,8 @@
   <button id="recalibrate">Recalibrate</button>
   <button id="finalize-btn" style="display:none;">Finalize Score</button>
   <button id="restore-btn" style="display:none;">Restore Previous Game</button>
+  <button id="grid-up-btn">Grid Height ↑</button>
+  <button id="grid-down-btn">Grid Height ↓</button>
 </div>
 
 <div id="adjust-ui" style="display:none; position:fixed; top:110px; left:0; right:0; z-index:60; background:rgba(0,0,0,0.9); padding:10px; font-family:-apple-system, system-ui, sans-serif;">
@@ -264,6 +266,12 @@ function finalizeCalibration() {
     hideAdjustUI();
     cornerMarkers.forEach((m) => scene.remove(m));
     statusEl.classList.add('ready');
+
+    // A real board is flat — force all 4 corners to share the same height,
+    // so one imprecise tap can't tilt the whole grid near that corner.
+    const avgY = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4;
+    corners.forEach((c) => { c.y = avgY; });
+
     buildGrid();
     resetBoardState();
     updateTurnStatus();
@@ -303,11 +311,14 @@ function doRestoreGame() {
 }
 
 document.getElementById('restore-btn').addEventListener('click', doRestoreGame);
+document.getElementById('grid-up-btn').addEventListener('click', nudgeGridHeightUp);
+document.getElementById('grid-down-btn').addEventListener('click', nudgeGridHeightDown);
 
 function resetCalibration() {
   corners = [];
   calibrated = false;
   adjusting = false;
+  manualHeightAdjust = 0;
   cornerMarkers.forEach((m) => scene.remove(m));
   cornerMarkers.length = 0;
   hideAdjustUI();
@@ -358,6 +369,8 @@ const stoneAssets = {};
 let stoneCount = 0;
 let gridBuilt = false;
 
+let manualHeightAdjust = 0; // adjustable live via the Grid Up/Down menu buttons
+
 function gridPosition(row, col, target) {
   const u = col / (GRID_SIZE - 1);
   const v = row / (GRID_SIZE - 1);
@@ -366,11 +379,57 @@ function gridPosition(row, col, target) {
   target.x = tl.x * (1 - u) * (1 - v) + tr.x * u * (1 - v) + bl.x * (1 - u) * v + br.x * u * v;
   target.y = tl.y * (1 - u) * (1 - v) + tr.y * u * (1 - v) + bl.y * (1 - u) * v + br.y * u * v;
   target.z = tl.z * (1 - u) * (1 - v) + tr.z * u * (1 - v) + bl.z * (1 - u) * v + br.z * u * v;
-  target.y += HEIGHT_OFFSET; // nudge down closer to the real board surface
+  target.y += HEIGHT_OFFSET + manualHeightAdjust;
   return target;
 }
 
 const LINE_THICKNESS = 0.002;
+
+const HEIGHT_STEP = 0.002;
+
+function reapplyGridHeight() {
+  const tmp = new THREE.Vector3();
+
+  dotMeshes.forEach((mesh) => {
+    gridPosition(mesh.userData.row, mesh.userData.col, tmp);
+    mesh.position.copy(tmp);
+  });
+
+  let idx = 0;
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  for (let row = 0; row < GRID_SIZE; row++) {
+    gridPosition(row, 0, a);
+    gridPosition(row, GRID_SIZE - 1, b);
+    positionLineMesh(lineMeshes[idx++], a, b);
+  }
+  for (let col = 0; col < GRID_SIZE; col++) {
+    gridPosition(0, col, a);
+    gridPosition(GRID_SIZE - 1, col, b);
+    positionLineMesh(lineMeshes[idx++], a, b);
+  }
+
+  placedStones.forEach((s) => {
+    gridPosition(s.row, s.col, tmp);
+    s.stoneMesh.position.copy(tmp);
+    s.stoneMesh.position.y += 0.003;
+    s.ringMesh.position.copy(tmp);
+    s.ringMesh.position.y += 0.001;
+  });
+
+  log(`Grid height adjusted (manual offset: ${(manualHeightAdjust * 1000).toFixed(0)}mm)`);
+}
+
+function nudgeGridHeightUp() {
+  if (!gridBuilt) { log('Calibrate first'); return; }
+  manualHeightAdjust += HEIGHT_STEP;
+  reapplyGridHeight();
+}
+
+function nudgeGridHeightDown() {
+  if (!gridBuilt) { log('Calibrate first'); return; }
+  manualHeightAdjust -= HEIGHT_STEP;
+  reapplyGridHeight();
+}
 function positionLineMesh(mesh, a, b) {
   const mid = a.clone().add(b).multiplyScalar(0.5);
   const dir = b.clone().sub(a);
@@ -774,7 +833,8 @@ menuToggle.addEventListener('click', () => {
   menuPanel.style.display = menuPanel.style.display === 'flex' ? 'none' : 'flex';
 });
 menuPanel.addEventListener('click', (e) => {
-  if (e.target.tagName === 'BUTTON') menuPanel.style.display = 'none'; // auto-close after any action
+  const isHeightButton = e.target.id === 'grid-up-btn' || e.target.id === 'grid-down-btn';
+  if (e.target.tagName === 'BUTTON' && !isHeightButton) menuPanel.style.display = 'none'; // auto-close after most actions
 });
 
 document.getElementById('pass-btn').addEventListener('click', doPass);
