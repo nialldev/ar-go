@@ -653,19 +653,18 @@ function reapplyGridHeight() {
     mesh.position.copy(tmp);
   });
 
-  const occupiedKeys = new Set(placedStones.map((s) => s.row + ',' + s.col));
-
+  let idx = 0;
   const a = new THREE.Vector3(), b = new THREE.Vector3();
-  lineMeshes.forEach((mesh) => {
-    const { r1, c1, r2, c2 } = mesh.userData;
-    const occupied = occupiedKeys.has(r1 + ',' + c1) || occupiedKeys.has(r2 + ',' + c2);
-    mesh.visible = !occupied; // gap out near any visually-present stone, real or virtual
-    if (!occupied) {
-      gridPosition(r1, c1, a);
-      gridPosition(r2, c2, b);
-      positionLineMesh(mesh, a, b);
-    }
-  });
+  for (let row = 0; row < GRID_SIZE; row++) {
+    gridPosition(row, 0, a);
+    gridPosition(row, GRID_SIZE - 1, b);
+    positionLineMesh(lineMeshes[idx++], a, b);
+  }
+  for (let col = 0; col < GRID_SIZE; col++) {
+    gridPosition(0, col, a);
+    gridPosition(GRID_SIZE - 1, col, b);
+    positionLineMesh(lineMeshes[idx++], a, b);
+  }
 
   placedStones.forEach((s) => {
     gridPosition(s.row, s.col, tmp);
@@ -722,32 +721,23 @@ function buildGrid() {
   const lineBoxMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
   const a = new THREE.Vector3(), b = new THREE.Vector3();
 
-  // Lines are built as short segments between EACH pair of adjacent intersections
-  // (not one long line per row/col) so a segment can be individually hidden when
-  // a stone sits at either end — mimicking how a real stone covers a printed line.
+  // Simple continuous lines (one per row/col) — the per-cell gap-around-stones
+  // approach was reverted for now, may revisit later.
   for (let row = 0; row < GRID_SIZE; row++) {
-    for (let col = 0; col < GRID_SIZE - 1; col++) {
-      const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
-      mesh.userData.r1 = row; mesh.userData.c1 = col;
-      mesh.userData.r2 = row; mesh.userData.c2 = col + 1;
-      gridPosition(row, col, a);
-      gridPosition(row, col + 1, b);
-      positionLineMesh(mesh, a, b);
-      scene.add(mesh);
-      lineMeshes.push(mesh);
-    }
+    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+    gridPosition(row, 0, a);
+    gridPosition(row, GRID_SIZE - 1, b);
+    positionLineMesh(mesh, a, b);
+    scene.add(mesh);
+    lineMeshes.push(mesh);
   }
   for (let col = 0; col < GRID_SIZE; col++) {
-    for (let row = 0; row < GRID_SIZE - 1; row++) {
-      const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
-      mesh.userData.r1 = row; mesh.userData.c1 = col;
-      mesh.userData.r2 = row + 1; mesh.userData.c2 = col;
-      gridPosition(row, col, a);
-      gridPosition(row + 1, col, b);
-      positionLineMesh(mesh, a, b);
-      scene.add(mesh);
-      lineMeshes.push(mesh);
-    }
+    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+    gridPosition(0, col, a);
+    gridPosition(GRID_SIZE - 1, col, b);
+    positionLineMesh(mesh, a, b);
+    scene.add(mesh);
+    lineMeshes.push(mesh);
   }
 
   stoneAssets.blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
@@ -1408,11 +1398,17 @@ function ensureCameraBinding(session) {
   }
 }
 
+let loggedTextureDims = false;
+
 function sampleIntersectionBrightness(gl, texture, texWidth, texHeight, worldPos) {
+  if (!loggedTextureDims) {
+    loggedTextureDims = true;
+    log(`Camera auto-detect: texture is ${texWidth}x${texHeight}, canvas is ${window.innerWidth}x${window.innerHeight}`);
+  }
   const ndc = worldPos.clone().project(camera);
   if (ndc.z > 1) return null; // behind camera
   const texX = Math.round((ndc.x * 0.5 + 0.5) * texWidth);
-  const texY = Math.round((ndc.y * 0.5 + 0.5) * texHeight); // WebGL texture/readPixels origin is bottom-left
+  const texY = Math.round((-ndc.y * 0.5 + 0.5) * texHeight); // flipped to match camera image row order
   if (texX < 0 || texX >= texWidth || texY < 0 || texY >= texHeight) return null;
 
   if (!sampleFramebuffer) sampleFramebuffer = gl.createFramebuffer();
@@ -1560,7 +1556,10 @@ function render(timestamp, frame) {
 
             if (bestKey && bestDelta >= BRIGHTNESS_CHANGE_THRESHOLD) {
               const [r, c] = bestKey.split(',').map(Number);
-              log(`Camera auto-detect: found a change at (${r},${c}), brightness delta ${bestDelta.toFixed(0)}`);
+              const debugPos = new THREE.Vector3();
+              gridPosition(r, c, debugPos);
+              const debugNdc = debugPos.clone().project(camera);
+              log(`Camera auto-detect: found a change at (${r},${c}), brightness delta ${bestDelta.toFixed(0)}, ndc=(${debugNdc.x.toFixed(3)},${debugNdc.y.toFixed(3)})`);
               placeStoneAt(r, c);
               // Re-baseline against the new board state for next time
               const freshSnap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
