@@ -324,7 +324,7 @@ function gridPosition(row, col, target) {
   return target;
 }
 
-const LINE_THICKNESS = 0.003;
+const LINE_THICKNESS = 0.002;
 function positionLineMesh(mesh, a, b) {
   const mid = a.clone().add(b).multiplyScalar(0.5);
   const dir = b.clone().sub(a);
@@ -851,11 +851,8 @@ function finalizeScoreWithDeadStones() {
     if (deadColor === EMPTY) return;
 
     if (deadColor === BLACK) whiteCaptures++; else blackCaptures++;
-    boardState[r][c] = EMPTY;
-    removeStoneAt(r, c);
-    scene.remove(xMesh);
+    boardState[r][c] = EMPTY; // counts as captured/empty for scoring, but stays visible on screen
   });
-  deadMarkers.clear();
   updateCapturesUI();
 
   markingDeadStones = false;
