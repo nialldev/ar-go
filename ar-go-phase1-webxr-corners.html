@@ -355,7 +355,6 @@ function finalizeCalibration() {
       log('A previous game was found — tap Restore Previous Game in the menu to bring it back, or just start playing for a new game');
     }
 
-    pendingBaselineCapture = true;
     updateConfirmButtonVisibility();
   } catch (err) {
     log('ERROR in finalizeCalibration/buildGrid: ' + err.message);
@@ -400,7 +399,6 @@ function finalizeAdjustment() {
     buildGrid(); // rebuilds dots/lines fresh from the adjusted corners
     rebuildStonesFromBoardState(); // reposition any existing stones to match
     updateTurnStatus();
-    pendingBaselineCapture = true; // intersection positions changed, need a fresh camera baseline
     log('Calibration adjusted — grid and stones repositioned, game state kept');
   } catch (err) {
     log('ERROR in finalizeAdjustment: ' + err.message);
@@ -453,8 +451,7 @@ document.getElementById('coord-mode-btn').addEventListener('click', () => {
   cameraCoordModeIndex = (cameraCoordModeIndex + 1) % COORD_MODES.length;
   const modeName = COORD_MODES[cameraCoordModeIndex].name;
   document.getElementById('coord-mode-btn').textContent = 'Camera Coord: ' + modeName;
-  log('Camera coord mode changed to: ' + modeName + ' — capturing a fresh baseline');
-  pendingBaselineCapture = true; // old baseline was sampled with the old mapping, now invalid
+  log('Camera coord mode changed to: ' + modeName);
 });
 document.getElementById('adj-cancel').addEventListener('click', cancelAdjustment);
 
@@ -498,8 +495,6 @@ function resetCalibration() {
   reticle.visible = false;
   statusEl.classList.remove('ready');
   statusEl.textContent = 'Recalibrating — tap the board\'s top-left corner.';
-  boardSnapshot = {};
-  pendingBaselineCapture = false;
   pendingConfirmCapture = false;
   updateConfirmButtonVisibility();
   log('Recalibration started');
@@ -900,7 +895,6 @@ function doClearStones() {
   clearSavedGameState();
   pendingRestoreData = null;
   document.getElementById('restore-btn').style.display = 'none';
-  pendingBaselineCapture = true; // board is empty again, need a fresh baseline
   updateConfirmButtonVisibility();
   log('Stones cleared — calibration kept, ready for a new test game');
 }
@@ -1225,7 +1219,6 @@ function placeStoneAt(row, col) {
   currentTurn = opponentColor;
   updateTurnStatus();
   saveGameState();
-  pendingBaselineCapture = true; // keep the camera baseline fresh after any placement
   if (gridBuilt) reapplyGridHeight(); // updates line gaps around the new stone immediately
   if (pendingRestoreData) {
     pendingRestoreData = null;
@@ -1386,8 +1379,6 @@ window.addEventListener('click', onTouchTap);
 let cameraGlBinding = null;
 let cameraBindingChecked = false;
 let sampleFramebuffer = null;
-let boardSnapshot = {}; // 'row,col' -> brightness (0-255), for currently-empty intersections
-let pendingBaselineCapture = false;
 let pendingConfirmCapture = false;
 const BRIGHTNESS_CHANGE_THRESHOLD = 25; // minimum change to count as "something appeared here"
 
@@ -1456,6 +1447,29 @@ function sampleIntersectionBrightness(gl, texture, texWidth, texHeight, worldPos
   return sum / (BLOCK * BLOCK);
 }
 
+// Single-frame detection: instead of comparing two snapshots taken at different
+// times (vulnerable to lighting/shadow changes from moving the phone in between),
+// this finds points whose brightness is a clear outlier relative to the median
+// of all other points in the SAME snapshot. A stone is always much darker or
+// lighter than bare wood, regardless of current lighting conditions.
+function detectStoneSingleFrame(frame, referenceSpace) {
+  const snap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
+  if (!snap) return null;
+  const entries = Object.entries(snap);
+  if (entries.length < 5) return null;
+
+  const values = entries.map(([, v]) => v).sort((a, b) => a - b);
+  const median = values[Math.floor(values.length / 2)];
+
+  let bestKey = null, bestDeviation = 0;
+  entries.forEach(([key, v]) => {
+    const dev = Math.abs(v - median);
+    if (dev > bestDeviation) { bestDeviation = dev; bestKey = key; }
+  });
+
+  return { snap, median, bestKey, bestDeviation };
+}
+
 function captureEmptyIntersectionSnapshot(frame, referenceSpace) {
   if (!cameraGlBinding) return null;
   const pose = frame.getViewerPose(referenceSpace);
@@ -1502,25 +1516,22 @@ document.getElementById('confirm-move-btn').addEventListener('click', () => {
 let pendingDebugHeatmap = false;
 
 function showDebugHeatmap(frame, referenceSpace) {
-  const snap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
-  if (!snap) { log('Heatmap: capture failed'); return; }
+  const result = detectStoneSingleFrame(frame, referenceSpace);
+  if (!result) { log('Heatmap: capture failed'); return; }
 
-  let maxDelta = 0;
-  const deltas = {};
-  Object.keys(boardSnapshot).forEach((key) => {
-    if (snap[key] === undefined) return;
-    const d = Math.abs(boardSnapshot[key] - snap[key]);
-    deltas[key] = d;
-    if (d > maxDelta) maxDelta = d;
-  });
-  log(`Heatmap shown — max brightness change found: ${maxDelta.toFixed(0)} (red = biggest change)`);
+  const { snap, median, bestDeviation } = result;
+  log(`Heatmap shown — median brightness ${median.toFixed(0)}, biggest deviation ${bestDeviation.toFixed(0)} (red = most different from typical board color right now)`);
+
+  let maxDev = 0;
+  Object.values(snap).forEach((v) => { const d = Math.abs(v - median); if (d > maxDev) maxDev = d; });
 
   dotMeshes.forEach((mesh) => {
     const key = mesh.userData.row + ',' + mesh.userData.col;
-    const d = deltas[key] || 0;
-    const t = maxDelta > 0 ? d / maxDelta : 0;
+    const v = snap[key];
+    const d = v === undefined ? 0 : Math.abs(v - median);
+    const t = maxDev > 0 ? d / maxDev : 0;
     mesh.material.opacity = Math.max(0.18, t);
-    mesh.material.color.setRGB(t, 1 - t, 0); // green (no change) -> red (biggest change)
+    mesh.material.color.setRGB(t, 1 - t, 0); // green (typical) -> red (most different from median)
   });
 }
 
@@ -1605,17 +1616,6 @@ function render(timestamp, frame) {
       if (gridBuilt) {
         ensureCameraBinding(session);
 
-        if (pendingBaselineCapture) {
-          const snap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
-          if (snap) {
-            boardSnapshot = snap;
-            log('Camera auto-detect: baseline captured (' + Object.keys(snap).length + ' points)');
-          } else {
-            log('Camera auto-detect: baseline capture failed — manual tap-to-place still works');
-          }
-          pendingBaselineCapture = false;
-        }
-
         if (pendingDebugHeatmap) {
           pendingDebugHeatmap = false;
           showDebugHeatmap(frame, referenceSpace);
@@ -1623,29 +1623,20 @@ function render(timestamp, frame) {
 
         if (pendingConfirmCapture) {
           pendingConfirmCapture = false;
-          const afterSnap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
-          if (!afterSnap) {
+          const result = detectStoneSingleFrame(frame, referenceSpace);
+          if (!result) {
             log('Camera auto-detect: capture failed — tap the correct dot manually instead');
           } else {
-            let bestKey = null, bestDelta = 0;
-            Object.keys(boardSnapshot).forEach((key) => {
-              if (afterSnap[key] === undefined) return; // no longer empty or out of view
-              const delta = Math.abs(boardSnapshot[key] - afterSnap[key]);
-              if (delta > bestDelta) { bestDelta = delta; bestKey = key; }
-            });
-
-            if (bestKey && bestDelta >= BRIGHTNESS_CHANGE_THRESHOLD) {
+            const { bestKey, bestDeviation, median } = result;
+            if (bestKey && bestDeviation >= BRIGHTNESS_CHANGE_THRESHOLD) {
               const [r, c] = bestKey.split(',').map(Number);
               const debugPos = new THREE.Vector3();
               gridPosition(r, c, debugPos);
               const debugNdc = debugPos.clone().project(camera);
-              log(`Camera auto-detect: found a change at (${r},${c}), brightness delta ${bestDelta.toFixed(0)}, ndc=(${debugNdc.x.toFixed(3)},${debugNdc.y.toFixed(3)})`);
+              log(`Camera auto-detect: found a change at (${r},${c}), deviation ${bestDeviation.toFixed(0)} from median ${median.toFixed(0)}, ndc=(${debugNdc.x.toFixed(3)},${debugNdc.y.toFixed(3)})`);
               placeStoneAt(r, c);
-              // Re-baseline against the new board state for next time
-              const freshSnap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
-              if (freshSnap) boardSnapshot = freshSnap;
             } else {
-              log(`Camera auto-detect: no clear change found (best delta ${bestDelta.toFixed(0)}, needed ${BRIGHTNESS_CHANGE_THRESHOLD}) — tap the correct dot manually instead`);
+              log(`Camera auto-detect: no clear change found (best deviation ${bestDeviation.toFixed(0)}, needed ${BRIGHTNESS_CHANGE_THRESHOLD}) — tap the correct dot manually instead`);
             }
           }
         }
