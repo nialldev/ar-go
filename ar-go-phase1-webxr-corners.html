@@ -462,6 +462,7 @@ function doRestoreGame() {
   gameOver = saved.gameOver;
   stoneCount = saved.stoneCount;
   rebuildStonesFromBoardState();
+  if (gridBuilt) reapplyGridHeight();
   updateCapturesUI();
   if (!gameOver) updateTurnStatus();
   log('Previous game restored');
@@ -652,18 +653,19 @@ function reapplyGridHeight() {
     mesh.position.copy(tmp);
   });
 
-  let idx = 0;
+  const occupiedKeys = new Set(placedStones.map((s) => s.row + ',' + s.col));
+
   const a = new THREE.Vector3(), b = new THREE.Vector3();
-  for (let row = 0; row < GRID_SIZE; row++) {
-    gridPosition(row, 0, a);
-    gridPosition(row, GRID_SIZE - 1, b);
-    positionLineMesh(lineMeshes[idx++], a, b);
-  }
-  for (let col = 0; col < GRID_SIZE; col++) {
-    gridPosition(0, col, a);
-    gridPosition(GRID_SIZE - 1, col, b);
-    positionLineMesh(lineMeshes[idx++], a, b);
-  }
+  lineMeshes.forEach((mesh) => {
+    const { r1, c1, r2, c2 } = mesh.userData;
+    const occupied = occupiedKeys.has(r1 + ',' + c1) || occupiedKeys.has(r2 + ',' + c2);
+    mesh.visible = !occupied; // gap out near any visually-present stone, real or virtual
+    if (!occupied) {
+      gridPosition(r1, c1, a);
+      gridPosition(r2, c2, b);
+      positionLineMesh(mesh, a, b);
+    }
+  });
 
   placedStones.forEach((s) => {
     gridPosition(s.row, s.col, tmp);
@@ -720,21 +722,32 @@ function buildGrid() {
   const lineBoxMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
   const a = new THREE.Vector3(), b = new THREE.Vector3();
 
+  // Lines are built as short segments between EACH pair of adjacent intersections
+  // (not one long line per row/col) so a segment can be individually hidden when
+  // a stone sits at either end — mimicking how a real stone covers a printed line.
   for (let row = 0; row < GRID_SIZE; row++) {
-    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
-    gridPosition(row, 0, a);
-    gridPosition(row, GRID_SIZE - 1, b);
-    positionLineMesh(mesh, a, b);
-    scene.add(mesh);
-    lineMeshes.push(mesh);
+    for (let col = 0; col < GRID_SIZE - 1; col++) {
+      const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+      mesh.userData.r1 = row; mesh.userData.c1 = col;
+      mesh.userData.r2 = row; mesh.userData.c2 = col + 1;
+      gridPosition(row, col, a);
+      gridPosition(row, col + 1, b);
+      positionLineMesh(mesh, a, b);
+      scene.add(mesh);
+      lineMeshes.push(mesh);
+    }
   }
   for (let col = 0; col < GRID_SIZE; col++) {
-    const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
-    gridPosition(0, col, a);
-    gridPosition(GRID_SIZE - 1, col, b);
-    positionLineMesh(mesh, a, b);
-    scene.add(mesh);
-    lineMeshes.push(mesh);
+    for (let row = 0; row < GRID_SIZE - 1; row++) {
+      const mesh = new THREE.Mesh(lineBoxGeo, lineBoxMat);
+      mesh.userData.r1 = row; mesh.userData.c1 = col;
+      mesh.userData.r2 = row + 1; mesh.userData.c2 = col;
+      gridPosition(row, col, a);
+      gridPosition(row + 1, col, b);
+      positionLineMesh(mesh, a, b);
+      scene.add(mesh);
+      lineMeshes.push(mesh);
+    }
   }
 
   stoneAssets.blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
@@ -872,6 +885,7 @@ function doUndo() {
   gameOver = snap.gameOver;
 
   rebuildStonesFromBoardState();
+  if (gridBuilt) reapplyGridHeight();
   updateCapturesUI();
   if (!gameOver) updateTurnStatus();
   log('Move undone');
@@ -1213,6 +1227,7 @@ function placeStoneAt(row, col) {
   updateTurnStatus();
   saveGameState();
   pendingBaselineCapture = true; // keep the camera baseline fresh after any placement
+  if (gridBuilt) reapplyGridHeight(); // updates line gaps around the new stone immediately
   if (pendingRestoreData) {
     pendingRestoreData = null;
     document.getElementById('restore-btn').style.display = 'none';
