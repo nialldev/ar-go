@@ -1325,7 +1325,7 @@ document.getElementById('finalize-btn').addEventListener('click', finalizeScoreW
 
 function onTouchTap(event) {
   if (!gridBuilt) return; // calibration taps are handled via WebXR 'select' instead
-  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('.adjust-btn') || event.target.closest('#log') || event.target.closest('#confirm-move-btn') || event.target.closest('#ready-to-place-btn'))) return;
+  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('#adjust-ui') || event.target.closest('#log') || event.target.closest('#confirm-move-btn') || event.target.closest('#ready-to-place-btn'))) return;
 
   const now = Date.now();
   if (now - lastTapTime < 400) return;
@@ -1396,13 +1396,28 @@ let oesConverter = null;
 function ensureOesConverter(gl) {
   if (oesConverter) return oesConverter;
 
-  const ext = gl.getExtension('OES_EGL_image_external');
+  const isWebGL2 = (typeof WebGL2RenderingContext !== 'undefined') && (gl instanceof WebGL2RenderingContext);
+
+  // WebGL1 uses OES_EGL_image_external; WebGL2 has this promoted to core under
+  // a different extension name (OES_EGL_image_external_essl3) for ESSL 3.00
+  // shaders — the old WebGL1 extension name correctly returns null in WebGL2,
+  // that's not actually a failure.
+  const ext = isWebGL2
+    ? gl.getExtension('OES_EGL_image_external_essl3')
+    : gl.getExtension('OES_EGL_image_external');
+
   if (!ext) {
-    log('Camera auto-detect: OES_EGL_image_external extension not available — cannot convert camera texture');
-    return null;
+    log(`Camera auto-detect: OES external texture extension not found for ${isWebGL2 ? 'WebGL2' : 'WebGL1'} — trying anyway, some drivers expose it as core`);
   }
 
-  const vsSource = `
+  const vsSource = isWebGL2 ? `#version 300 es
+    in vec2 position;
+    out vec2 uv;
+    void main() {
+      uv = position * 0.5 + 0.5;
+      gl_Position = vec4(position, 0.0, 1.0);
+    }
+  ` : `
     attribute vec2 position;
     varying vec2 uv;
     void main() {
@@ -1410,7 +1425,16 @@ function ensureOesConverter(gl) {
       gl_Position = vec4(position, 0.0, 1.0);
     }
   `;
-  const fsSource = `
+  const fsSource = isWebGL2 ? `#version 300 es
+    #extension GL_OES_EGL_image_external_essl3 : require
+    precision mediump float;
+    in vec2 uv;
+    uniform samplerExternalOES cameraTexture;
+    out vec4 fragColor;
+    void main() {
+      fragColor = texture(cameraTexture, uv);
+    }
+  ` : `
     #extension GL_OES_EGL_image_external : require
     precision mediump float;
     varying vec2 uv;
