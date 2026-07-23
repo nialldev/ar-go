@@ -51,7 +51,8 @@
 <div id="not-supported" style="display:none;"></div>
 
 <button id="menu-toggle">☰</button>
-<button id="confirm-move-btn" style="display:none; position:fixed; top:130px; left:50%; transform:translateX(-50%); z-index:70; font-size:14px; padding:10px 18px; background:#0a0; color:white; border:none; border-radius:10px;">Confirm My Move</button>
+<button id="ready-to-place-btn" style="display:none; position:fixed; top:130px; left:50%; transform:translateX(-160px); z-index:70; font-size:13px; padding:10px 14px; background:#06c; color:white; border:none; border-radius:10px;">Ready to Place</button>
+<button id="confirm-move-btn" style="display:none; position:fixed; top:130px; left:50%; transform:translateX(20px); z-index:70; font-size:13px; padding:10px 14px; background:#0a0; color:white; border:none; border-radius:10px;">Confirm My Move</button>
 <div id="menu-panel">
   <button id="pass-btn">Pass</button>
   <button id="resign-btn">Resign</button>
@@ -496,6 +497,7 @@ function resetCalibration() {
   statusEl.classList.remove('ready');
   statusEl.textContent = 'Recalibrating — tap the board\'s top-left corner.';
   pendingConfirmCapture = false;
+  preMoveSnapshot = null;
   updateConfirmButtonVisibility();
   log('Recalibration started');
 }
@@ -895,6 +897,7 @@ function doClearStones() {
   clearSavedGameState();
   pendingRestoreData = null;
   document.getElementById('restore-btn').style.display = 'none';
+  preMoveSnapshot = null;
   updateConfirmButtonVisibility();
   log('Stones cleared — calibration kept, ready for a new test game');
 }
@@ -1322,7 +1325,7 @@ document.getElementById('finalize-btn').addEventListener('click', finalizeScoreW
 
 function onTouchTap(event) {
   if (!gridBuilt) return; // calibration taps are handled via WebXR 'select' instead
-  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('.adjust-btn') || event.target.closest('#log') || event.target.closest('#confirm-move-btn'))) return;
+  if (event.target.closest && (event.target.closest('#menu-panel') || event.target.closest('#menu-toggle') || event.target.closest('.adjust-btn') || event.target.closest('#log') || event.target.closest('#confirm-move-btn') || event.target.closest('#ready-to-place-btn'))) return;
 
   const now = Date.now();
   if (now - lastTapTime < 400) return;
@@ -1380,6 +1383,8 @@ let cameraGlBinding = null;
 let cameraBindingChecked = false;
 let sampleFramebuffer = null;
 let pendingConfirmCapture = false;
+let pendingPreMoveCapture = false;
+let preMoveSnapshot = null; // fresh reference taken right before you place a stone (short window, avoids lighting drift)
 const BRIGHTNESS_CHANGE_THRESHOLD = 25; // minimum change to count as "something appeared here"
 
 function ensureCameraBinding(session) {
@@ -1504,6 +1509,14 @@ function captureEmptyIntersectionSnapshot(frame, referenceSpace) {
   return snapshot;
 }
 
+document.getElementById('ready-to-place-btn').addEventListener('click', () => {
+  if (!cameraGlBinding) {
+    log('Camera auto-detect not available — tap the correct dot on screen manually instead');
+    return;
+  }
+  log('Capturing reference photo...');
+  pendingPreMoveCapture = true;
+});
 document.getElementById('confirm-move-btn').addEventListener('click', () => {
   if (!cameraGlBinding) {
     log('Camera auto-detect not available — tap the correct dot on screen manually instead');
@@ -1516,11 +1529,35 @@ document.getElementById('confirm-move-btn').addEventListener('click', () => {
 let pendingDebugHeatmap = false;
 
 function showDebugHeatmap(frame, referenceSpace) {
+  if (preMoveSnapshot) {
+    const afterSnap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
+    if (!afterSnap) { log('Heatmap: capture failed'); return; }
+
+    let maxDelta = 0;
+    const deltas = {};
+    Object.keys(preMoveSnapshot).forEach((key) => {
+      if (afterSnap[key] === undefined) return;
+      const d = Math.abs(preMoveSnapshot[key] - afterSnap[key]);
+      deltas[key] = d;
+      if (d > maxDelta) maxDelta = d;
+    });
+    log(`Heatmap shown (vs your reference photo) — max change: ${maxDelta.toFixed(0)} (red = biggest change since reference)`);
+
+    dotMeshes.forEach((mesh) => {
+      const key = mesh.userData.row + ',' + mesh.userData.col;
+      const d = deltas[key] || 0;
+      const t = maxDelta > 0 ? d / maxDelta : 0;
+      mesh.material.opacity = Math.max(0.18, t);
+      mesh.material.color.setRGB(t, 1 - t, 0);
+    });
+    return;
+  }
+
   const result = detectStoneSingleFrame(frame, referenceSpace);
   if (!result) { log('Heatmap: capture failed'); return; }
 
   const { snap, median, bestDeviation } = result;
-  log(`Heatmap shown — median brightness ${median.toFixed(0)}, biggest deviation ${bestDeviation.toFixed(0)} (red = most different from typical board color right now)`);
+  log(`Heatmap shown (no reference photo, single-frame mode) — median brightness ${median.toFixed(0)}, biggest deviation ${bestDeviation.toFixed(0)}`);
 
   let maxDev = 0;
   Object.values(snap).forEach((v) => { const d = Math.abs(v - median); if (d > maxDev) maxDev = d; });
@@ -1550,8 +1587,9 @@ document.getElementById('show-heatmap-btn').addEventListener('click', () => {
 document.getElementById('clear-heatmap-btn').addEventListener('click', clearDebugHeatmap);
 
 function updateConfirmButtonVisibility() {
-  const btn = document.getElementById('confirm-move-btn');
-  btn.style.display = (gridBuilt && !gameOver && !markingDeadStones) ? 'block' : 'none';
+  const visible = (gridBuilt && !gameOver && !markingDeadStones) ? 'block' : 'none';
+  document.getElementById('confirm-move-btn').style.display = visible;
+  document.getElementById('ready-to-place-btn').style.display = visible;
 }
 
 let renderErrorLogged = false;
@@ -1621,22 +1659,58 @@ function render(timestamp, frame) {
           showDebugHeatmap(frame, referenceSpace);
         }
 
+        if (pendingPreMoveCapture) {
+          pendingPreMoveCapture = false;
+          const snap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
+          if (snap) {
+            preMoveSnapshot = snap;
+            log('Reference photo captured — now place your stone, then tap Confirm My Move');
+          } else {
+            log('Reference photo capture failed — try again, or use manual tap-to-place');
+          }
+        }
+
         if (pendingConfirmCapture) {
           pendingConfirmCapture = false;
-          const result = detectStoneSingleFrame(frame, referenceSpace);
-          if (!result) {
-            log('Camera auto-detect: capture failed — tap the correct dot manually instead');
-          } else {
-            const { bestKey, bestDeviation, median } = result;
-            if (bestKey && bestDeviation >= BRIGHTNESS_CHANGE_THRESHOLD) {
-              const [r, c] = bestKey.split(',').map(Number);
-              const debugPos = new THREE.Vector3();
-              gridPosition(r, c, debugPos);
-              const debugNdc = debugPos.clone().project(camera);
-              log(`Camera auto-detect: found a change at (${r},${c}), deviation ${bestDeviation.toFixed(0)} from median ${median.toFixed(0)}, ndc=(${debugNdc.x.toFixed(3)},${debugNdc.y.toFixed(3)})`);
-              placeStoneAt(r, c);
+
+          if (preMoveSnapshot) {
+            // Diff against the fresh pre-move reference — handles permanent board
+            // marks correctly (they cancel out) and the short time window avoids
+            // lighting/shadow drift from moving the phone.
+            const afterSnap = captureEmptyIntersectionSnapshot(frame, referenceSpace);
+            if (!afterSnap) {
+              log('Camera auto-detect: capture failed — tap the correct dot manually instead');
             } else {
-              log(`Camera auto-detect: no clear change found (best deviation ${bestDeviation.toFixed(0)}, needed ${BRIGHTNESS_CHANGE_THRESHOLD}) — tap the correct dot manually instead`);
+              let bestKey = null, bestDelta = 0;
+              Object.keys(preMoveSnapshot).forEach((key) => {
+                if (afterSnap[key] === undefined) return;
+                const delta = Math.abs(preMoveSnapshot[key] - afterSnap[key]);
+                if (delta > bestDelta) { bestDelta = delta; bestKey = key; }
+              });
+
+              if (bestKey && bestDelta >= BRIGHTNESS_CHANGE_THRESHOLD) {
+                const [r, c] = bestKey.split(',').map(Number);
+                log(`Camera auto-detect: found a change at (${r},${c}) vs your reference photo, delta ${bestDelta.toFixed(0)}`);
+                placeStoneAt(r, c);
+              } else {
+                log(`Camera auto-detect: no clear change found vs reference (best delta ${bestDelta.toFixed(0)}, needed ${BRIGHTNESS_CHANGE_THRESHOLD}) — tap the correct dot manually instead`);
+              }
+            }
+            preMoveSnapshot = null; // used once, must press Ready to Place again for the next move
+          } else {
+            log('No reference photo taken — press "Ready to Place" before placing your stone next time. Trying single-frame detection instead...');
+            const result = detectStoneSingleFrame(frame, referenceSpace);
+            if (!result) {
+              log('Camera auto-detect: capture failed — tap the correct dot manually instead');
+            } else {
+              const { bestKey, bestDeviation, median } = result;
+              if (bestKey && bestDeviation >= BRIGHTNESS_CHANGE_THRESHOLD) {
+                const [r, c] = bestKey.split(',').map(Number);
+                log(`Camera auto-detect: found a change at (${r},${c}), deviation ${bestDeviation.toFixed(0)} from median ${median.toFixed(0)}`);
+                placeStoneAt(r, c);
+              } else {
+                log(`Camera auto-detect: no clear change found (best deviation ${bestDeviation.toFixed(0)}, needed ${BRIGHTNESS_CHANGE_THRESHOLD}) — tap the correct dot manually instead`);
+              }
             }
           }
         }
